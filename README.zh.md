@@ -33,25 +33,7 @@ DSH 官方「模型」页负责供应商与模型条目的基础字段，但**�
 
 ## 2. 安装
 
-作为标准 DSH Profile Bundle，一键安装并自动挂载。
-
-**按你所在的平台选一条即可**（GitHub 与 CNB 两个仓库内容完全同步，二选一，不要都装）：
-
-**GitHub（本页）**
-
-```sh
-dsh plugin --profile web add github:pyooyq/dsh-model-suite
-dsh web
-```
-
-**腾讯 CNB 镜像**（国内网络更稳；GitHub 连不上时用这条）
-
-```sh
-dsh plugin --profile web add git+https://cnb.cool/yooylook/dsh-model-suite.git
-dsh web
-```
-
-或从 npm 安装（发布后）：
+作为标准 DSH Profile Bundle，从 npm 一键安装并自动挂载：
 
 ```sh
 dsh plugin --profile web add dsh-model-suite
@@ -77,7 +59,7 @@ dsh plugin --profile web remove @kingsunb/dsh-model-plus
 dsh plugin --profile web remove dsh-plugin-custom-provider-enhancer
 
 # 2) 安装本插件
-dsh plugin --profile web add link:<绝对路径>/dsh-model-suite
+dsh plugin --profile web add dsh-model-suite
 
 # 3) 重启 web
 dsh web
