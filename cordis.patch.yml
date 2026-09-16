@@ -1,0 +1,9 @@
+# dsh-model-suite bundle patch：把插件行插入 web profile 的 cordis 层。
+# 安装：`dsh plugin --profile web add dsh-model-suite`
+#
+# ⚠️ 本插件取代两个前身插件（见 README 的迁移章节），三者都会拦截
+# settings 写入与 llm.resolveModelInfo，因此禁止同时启用。
+# 校验脚本会拒绝任何残留旧插件引用的 patch，请勿在此文件写旧包名。
+- insert:
+    - id: model-suite
+      name: 'dsh-model-suite'

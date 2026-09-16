@@ -1,0 +1,69 @@
+{
+  "name": "dsh-model-suite",
+  "version": "0.1.0",
+  "description": "DSH Web 插件：模型套件 —— 逐模型编辑思考强度/视觉/上下文/兼容开关，三源目录一键同步，并自动补齐自定义渠道的模型参数。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepare": "node scripts/build.mjs",
+    "smoke": "node scripts/security-smoke.mjs",
+    "smoke:integration": "node scripts/integration-smoke.mjs",
+    "smoke:ui": "node scripts/ui-smoke.mjs",
+    "verify": "node scripts/build.mjs && node scripts/security-smoke.mjs && node scripts/integration-smoke.mjs && node scripts/ui-smoke.mjs"
+  },
+  "files": [
+    "lib/**/*.js",
+    "scripts/**/*.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pyooyq/dsh-model-suite.git"
+  },
+  "homepage": "https://github.com/pyooyq/dsh-model-suite#readme",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-web": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": { "optional": false },
+    "@deepseek-ai/dsh-settings": { "optional": false },
+    "@deepseek-ai/dsh-host-webserver": { "optional": false },
+    "@deepseek-ai/dsh-web": { "optional": false },
+    "@deepseek-ai/dsh-client-ui-settings": { "optional": false },
+    "react": { "optional": false }
+  }
+}
