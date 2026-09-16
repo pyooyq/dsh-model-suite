@@ -33,10 +33,21 @@ Typical case: an OpenAI-compatible gateway rejects the `developer` role and chat
 
 ## 2. Install
 
-As a standard DSH Profile Bundle, install from GitHub in one command (auto-mounted):
+As a standard DSH Profile Bundle, install in one command (auto-mounted).
+
+**Pick the line for the platform you are on** — the GitHub and CNB mirrors carry identical content, so install from one of them, not both:
+
+**GitHub (this page)**
 
 ```sh
 dsh plugin --profile web add github:pyooyq/dsh-model-suite
+dsh web
+```
+
+**Tencent CNB mirror** (faster from mainland China; use it when GitHub is unreachable)
+
+```sh
+dsh plugin --profile web add git+https://cnb.cool/yooylook/dsh-model-suite.git
 dsh web
 ```
 
