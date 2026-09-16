@@ -73,7 +73,6 @@ for (const field of REQUIRED_PKG_FIELDS) {
   if (pkg[field] === undefined) fail(`package.json missing field: ${field}`)
 }
 if (pkg.name !== 'dsh-model-suite') fail(`package.json name must be "dsh-model-suite" (found ${pkg.name})`)
-if (pkg.version !== '0.1.0') fail(`package.json version must be "0.1.0" (found ${pkg.version})`)
 if (pkg.dsh?.bundle?.patch === undefined) fail('package.json dsh.bundle.patch must point at a cordis.patch.yml')
 if (pkg.dsh?.client?.platform !== 'web') fail('package.json dsh.client.platform must be "web"')
 if (!Array.isArray(pkg.dsh?.client?.inject) || pkg.dsh.client.inject.length === 0) {
@@ -88,6 +87,9 @@ try {
   if (typeof mod.apply !== 'function') fail('lib/index.js must export function apply(ctx)')
   if (typeof mod.name !== 'string' || !mod.name) fail('lib/index.js must export a non-empty name string')
   if (mod.name !== 'model-suite') fail(`lib/index.js name must be "model-suite" (found ${mod.name})`)
+  // O5：版本号与 package.json 双向比对（此前硬编码 '0.1.0'，升版本要改三处）
+  if (typeof mod.VERSION !== 'string' || !mod.VERSION) fail('lib/index.js must export a non-empty VERSION string')
+  if (mod.VERSION !== pkg.version) fail(`version drift: package.json ${pkg.version} vs lib/index.js VERSION ${mod.VERSION} — keep them in sync`)
   // cordis Inject.resolve：string[] 或 { 服务名: config }。
   // 禁止 { required, optional }——会被当成服务名，插件永远 pending。
   const inj = mod.inject

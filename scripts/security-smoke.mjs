@@ -43,7 +43,7 @@ const compatMod = await import(pathToFileURL(join(root, 'lib/compat-fields.js'))
 const EXPORTED = [
   'parseHostHeader', 'isLoopbackHostname', 'sameUrlOrigin', 'hasSensitiveRequestHeaders',
   'isLoopbackRemoteAddress', 'isBlockedOutboundHostname', 'assertOutboundUrlAllowed',
-  'sameOriginHost', 'routeError', 'isMissingValue', 'positiveInteger',
+  'sameOriginHost', 'routeError', 'isMissingValue', 'positiveInteger', 'compareVersion',
   'normalizeModelIdKey', 'normalizeModelIdLoose', 'isSafeModelId',
   'sanitizeEfforts', 'buildEfforts', 'highestNonOff', 'effortsToInfoArray',
   'validateCompatValueFor', 'sanitizeCompatFieldValue', 'cloneModel', 'compatKeyCount',
@@ -341,6 +341,9 @@ assert(compatOk.value.store === undefined, 'undefined keys omitted')
 assert(H.normalizeCompatInput(null, 'openai-responses').value === undefined, 'null clears compat')
 assert(H.normalizeCompatInput({}, 'openai-responses').value === undefined, 'empty object clears compat')
 assert(H.normalizeCompatInput(undefined, 'openai-responses').present === false, 'undefined means "leave alone"')
+// B5：协议没有字段表时，空 compat 草稿 = "客户端无法管理"，绝不能当成显式清空
+assert(H.normalizeCompatInput({}, 'not-a-real-protocol').present === false, 'B5: empty compat draft on a protocol without a field table means leave-alone')
+assert(H.normalizeCompatInput(null, 'not-a-real-protocol').present === true, 'B5: an explicit null still clears (explicit intent survives)')
 assert(H.COMPAT_OFFER['openai-completions'].has('supportsDeveloperRole'), 'gate offers supportsDeveloperRole')
 assert(H.COMPAT_OFFER['openai-completions'].size === 19, 'openai-completions offers 19 fields')
 assert(H.COMPAT_OFFER['openai-responses'].size === 4, 'openai-responses offers 4 fields')
@@ -361,6 +364,17 @@ const headersOk = H.normalizeHeadersInput({ 'X-Title': 'my-app', 'User-Agent': '
 assert(headersOk.value['X-Title'] === 'my-app', 'valid header kept')
 assert(headersOk.warnings.length === 1, 'reserved header name yields a non-blocking warning')
 assert(H.normalizeHeadersInput(null).value === undefined, 'null clears headers')
+// M1：大小写不同的重复头名必须报错（否则 Node 会把两个头都发出去）
+threw = false
+try { H.normalizeHeadersInput({ 'X-Tag': 'a', 'x-tag': 'b' }) } catch { threw = true }
+assert(threw, 'M1: case-variant duplicate header names rejected')
+
+// M5：语义化版本比较（checkUpdate 不得把降级报成更新）
+assert(H.compareVersion('0.2.0', '0.1.0') > 0, 'M5: compareVersion detects upgrades')
+assert(H.compareVersion('0.1.0', '0.2.0') < 0, 'M5: compareVersion detects downgrades')
+assert(H.compareVersion('0.1.0', '0.1.0') === 0, 'M5: compareVersion equal versions')
+assert(H.compareVersion('0.10.0', '0.9.9') > 0, 'M5: compareVersion is numeric, not lexicographic')
+assert(H.compareVersion('v0.2.0', '0.1.0') > 0, 'M5: compareVersion tolerates a leading v')
 
 // A16. defaultInput 不可为空
 threw = false
@@ -535,6 +549,34 @@ assert(src.includes('expectedRevision'), 'CAS expectedRevision used')
 assert(src.includes('禁止访问链路本地或云元数据地址'), 'SSRF guard present')
 assert(src.includes('HTTPS 请求禁止降级到 HTTP 重定向'), 'https downgrade guard present')
 assert(src.includes('重定向次数超限'), 'redirect cap present')
+
+// ── 2024 审查修复轮的回归标记 ──
+// B2：CAS 冲突必须带 409（README §8 承诺的终端状态码）
+assert(src.includes('statusCode = 409'), 'B2: CAS conflicts carry statusCode 409')
+// B1：全源失败不得把空快照缓存成"新鲜聚合结果"
+assert(!/Object\.keys\(perSource\)\.length\) catalogSnapshot/.test(src), 'B1: aggregate snapshot no longer poisoned by all-source failures')
+assert(src.includes('catalogFailureAt'), 'B1/M2: total-failure bookkeeping present')
+assert(src.includes('catalogFailureSlow'), 'M2: slow-failure cooldown for the bounded hot path')
+// B3/B4：add-models 校验字符集；delete 先查表后校验（外来 id 也能删）
+assert(src.includes('id 含非法字符'), 'B3: add-models rejects illegal id charsets')
+assert(src.includes('查无此条时才回落到入参字符集校验'), 'B4: delete validates the charset only after a lookup miss')
+// B5/B6：透传克隆 + 未知协议 compat 防护
+assert(src.includes('rawCloneModelEntry'), 'B6: raw pass-through clone for write-back paths')
+assert(src.includes('getRawModelsEntries'), 'B6: write paths use the pass-through model table')
+// B7：discover-models 按 provider 解析已存凭据
+assert(src.includes('resolveProviderApiKey(hasProfile ? profile : null'), 'B7: discover-models resolves stored credentials for a known provider')
+// M3：超限 body 排干而非销毁连接
+assert(!src.includes('queueMicrotask(() => req.destroy())'), 'M3: oversized bodies are drained, not socket-destroyed')
+// M4：测试请求不再硬编码 temperature: 0（o1 类端点会 400）
+assert(!/temperature:\s*0/.test(src), 'M4: the test request no longer hardcodes temperature: 0')
+// M7：设置类响应禁止缓存
+assert(src.includes("'cache-control': 'no-store'"), 'M7: API responses disable caching')
+// O1：目录 LRU 上限收紧到 3
+const lruMatch = src.match(/CATALOG_CACHE_MAX_ENTRIES = (\d+)/)
+assert(lruMatch && Number(lruMatch[1]) <= 3, 'O1: catalog LRU keeps at most 3 full parsed snapshots (found ' + (lruMatch && lruMatch[1]) + ')')
+// O6/O8：客户端 fetch 超时 + 数字输入校验
+assert(client.includes('AbortSignal.timeout'), 'O6: the client fetch has a timeout')
+assert(client.includes('.test(cvRaw)') && client.includes('.test(mvRaw)'), 'O8: numeric editor inputs are validated client-side')
 
 // cordis.patch.yml
 assert(patch.includes('- insert:'), 'patch has an insert row')

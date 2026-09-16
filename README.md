@@ -197,6 +197,19 @@ A full review pass produced behavioural fixes, each covered by assertions. The m
 11. **The catalog-source radios only list models.dev-shaped mirrors** (picking the LiteLLM/OpenRouter URL as the models.dev source silently produced zero models).
 12. Misc: the retry default shown for an unconfigured provider is now the real `DEFAULT_MAX_RETRIES = 5`; `parseAddModels` keeps catalog-filled vision/effort; per-source failures (`sourceWarnings`/`sourceErrors`) reach the UI; patch installation degrades to a warning on a frozen service instead of failing the whole plugin.
 
+### 9.2 Second review round (high → medium → low)
+
+A second full review produced 7 high, 7 medium and 8 low-priority fixes, each covered by behaviour or source-marker assertions:
+
+1. **B1** — a total catalog failure no longer poisons the aggregate snapshot for 30 min (the failed sources used to produce an empty "fresh" snapshot; now the snapshot only updates when ≥1 source succeeds, falls back to the last good one, and records the failure).
+2. **B2** — CAS conflicts now return **HTTP 409** as documented (they surfaced as plain 400 before), including the `saveSuitePrefs` replace fallback.
+3. **B3/B4** — `add-models` gained the id-charset whitelist `delete-model` always had; conversely, `delete-model` now looks the entry up **first**, so ids stored by the official page outside the plugin charset (e.g. Chinese) can still be deleted — the charset error only fires on a lookup miss.
+4. **B5** — saving a model on a provider without a field table (no `api`) no longer wipes its `compat`: an empty compat draft means "cannot manage" (leave alone), host and client both; compat validation uses the real `api` instead of guessing `openai-completions`.
+5. **B6** — write-back paths now pass model entries through verbatim (`rawCloneModelEntry`): unknown/future fields survive any save/delete/add/enrich (the whitelist rebuild used to erase them schema-loose fields DSH may add); only schemastery-materialized artifacts (`input: []`, empty compat objects, empty `reasoningEfforts`) are scrubbed.
+6. **B7** — the add-panel「获取模型」probe reuses the provider's stored baseURL/credentials/custom headers (it always sent an empty key before and 401'd on protected gateways).
+7. Medium: case-variant duplicate header names rejected (M1); slow-failure cooldown so an offline catalog cannot stall every resolution 3 s — a stale snapshot is served during the cooldown (M2); oversized bodies drained instead of socket-destroyed so the 400 is deliverable (M3); no hardcoded temperature in the test request — o1-style endpoints 400 on it (M4); semver compare so downgrades are not "updates" (M5); EN message patterns realigned with the actual host messages (M6); `cache-control: no-store` on API responses (M7).
+8. Low: catalog LRU 6→3 full parsed snapshots (O1); hot-path settings reads hoisted (O2); redundant client re-fill removed (O3); proxy parsed with `new URL` + protocol-default port (O4); `build.mjs` compares the exported `VERSION` with package.json instead of hardcoding (O5); client fetch timeout 120 s / 11 min for tests (O6); dead `npmUrl` branch removed (O7); numeric editor inputs validated client-side (O8).
+
 Upgrade checkpoints after a DSH bump:
 
 1. `lib/catalog-routes.js` — the 40 built-in route ids (`apply()` best-effort replaces them with the live list when pi-ai is resolvable).

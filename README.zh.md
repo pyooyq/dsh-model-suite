@@ -229,6 +229,33 @@ v0.1.0 在交付后做了一遍全量代码复审，以下为**行为相关**的
 | 14 | 目录档位缺 `off` | 目录给出显式档位（如 low/medium/high）却没提"可关闭"时，不写 `off: null`，那类模型的思考菜单里就没有「关闭」项 | 改为**总是附上 `off: null`**（语义 = 支持关闭，关闭时不发该参数；`none`/`off` 也映射到它） |
 | 15 | 英文词典 | 补词条后既有 62 条"删功能留下的僵尸词条"（`从剪贴板导入`、`读取系统剪贴板并识别`、旧措辞的重复词条等） | 删除，并在 smoke 里加**反向断言**防止再堆积；顺带发现 host 下发的预设名与目录源名（`关闭推理`/`通用三档`/`国内 GitHub 加速`…）没走 `t()`，一并修好 |
 
+### 9.2 第二轮复审修正记录（高→中→低）
+
+按严重度分三档全部修复（每项都有行为断言或源码标记断言）：
+
+| # | 级别 | 位置 | 问题 | 修正 |
+| :-- | :-- | :-- | :-- | :-- |
+| B1 | 高 | `getCatalog` | 三源**全部失败**时失败的源也会 `perSource[id]=[]`，聚合快照被**空目录**接管，TTL 30 分钟内自动链路静默失效（README 承诺的"失败源不缓存"只在单源层成立） | 只有**至少一源成功**才更新快照；全源失败沿用上一次成功快照（带本次按源错误）；没有就记录失败时间戳 |
+| B2 | 高 | `writeModels` 等写通道 | CAS 冲突以裸 `Error` 冒出，postRoute 兜底成 HTTP **400**——README §8 承诺的 **409** 终端状态从未兑现；`saveSuitePrefs` 的 replace 回退连冲突转换都没有 | `conflictError()` 统一挂 `statusCode=409`；replace 回退同样规范化 |
+| B3 | 高 | `normalizeCreateModels` | add-models 只查长度不查字符集（delete 却查），带引号/换行的 id 能走到写盘——README §7 声称的字符集白名单两条写路径一条有一条没有 | 补 `isSafeModelId` 校验，与 delete 同口径 |
+| B4 | 高 | `deleteModel` | 反向问题：官方页/手写 settings 存入的字符集之外的 id（如**中文 id**）永远无法通过本插件删除（400"含非法字符"）——id 在删除里只用于查表，该校验没必要 | **先查表、查无此条才回落到入参字符集校验**：已存在的任何条目都能删，查不到时非法入参依旧 400 |
+| B5 | 高 | `normalizeCompatInput` / `saveFromEditor` / client `saveModel` | 无 api（= 无 compat 字段表）的渠道上，客户端只能产出空 compat 草稿，host 把 `{}` 当成"显式清空"——改个显示名就把该模型 compat 抹了（渠道级卡片有防护，模型级没有） | host：无字段表协议 + 空对象 = "不动该字段"；compat 校验用**真实** api 不再兜底 openai-completions；client：无字段表就不提交 compat |
+| B6 | 高 | `cloneModel` 白名单 | `getRawModels` 用白名单重建整表，save/delete/add/enrich 全部**整表写回**——DSH 未来给模型条目加任何新字段，保存任意一个模型就会把同渠道所有条目的该字段**静默抹掉**（真机核对：pi-ai Config schema 对未知键宽松，会原样持久化，所以透传合法且必要） | 新增 `rawCloneModelEntry`：写回路径**原样透传**全部自有键，仅剔除 schemastery 物化的 `input:[]`/compat 空对象/空 `reasoningEfforts`（真机核对：裸条目 resolve 后恰好物化这三样） |
+| B7 | 高 | `discoverModels` / client `runDiscoverModels` | "手动添加模型"面板的「获取模型」固定 `apiKey:''`——受保护网关 401，而"更新模型列表"却能过（两条路径能力不一致） | discover 带 `provider` 时复用渠道已存的 baseURL/api/凭据/自定义请求头 |
+| M1 | 中 | `normalizeHeadersInput` | `{X-Foo, x-foo}` 大小写不同不去重（客户端防了，host 没防），Node 会把两个头都发出去 | 大小写不敏感去重，与客户端 `seen[lower]` 同口径 |
+| M2 | 中 | `getCatalogBounded` | 拉取持续**慢失败**（超时/挂起类）时，每次 `resolveModelInfo`/保存都重新赛跑 3 秒 | **慢失败**（单次 ≥3s）后 60s 冷却：有旧快照用旧快照、没有就空目录；快失败（404/DNS 立即失败）不冷却，重试开销极低 |
+| M3 | 中 | `readJsonBody` | body 超限时 `req.destroy()` 可能抢在 400 响应刷出之前断开 socket，客户端看到连接重置 | 排干剩余数据（`resume`）而非销毁连接；补 done 标志防重复 settle |
+| M4 | 中 | `testModel` | 固定 `temperature: 0`——o1/o3 等"仅默认温度"端点因该字段直接 400（正是要避免的"真实会话能跑、测试失败"假故障类别） | 移除该字段，交给服务端默认值 |
+| M5 | 中 | `checkUpdate` | `latest !== local` 无版本比较，降级（dist-tag 回退/本地预发布）也报"发现新版本" | `compareVersion` 按数字段比较（0.10.0 > 0.9.9），仅 `latest > local` 才报更新 |
+| M6 | 中 | client `EN_MSG_PATTERNS` | 模式串与 host 现行消息不匹配：'已保存 X 的渠道设置'被翻成中英混排、'已删除…（via…）'不匹配回退中文；另有多条模式对应的消息早已不存在 | 逐条对齐（具体模式在前），删除僵尸模式，补 preset/发现/获取等消息的翻译 |
+| M7 | 中 | `json()` | API 响应无缓存头，设置类数据可能被中间层/启发式缓存 | 所有响应加 `cache-control: no-store` |
+| O1 | 低 | `CATALOG_CACHE_MAX_ENTRIES` | 目录 LRU 上限 6 份 × 全量解析对象（models.dev 单份数 MB）≈ 几十 MB 常驻 | 收紧到 3（三源各一份 + 换一次地址的余量） |
+| O2 | 低 | `paramSource` / 链路三 | `listModels` 逐模型 `readAuto()→settings.get`；链路三每次 resolve 读两次 `providerProfile` | auto 配置/profile 各读一次复用 |
+| O3 | 低 | client `switchProvider` | `fillAdvancedFromProvider` 之后又重复 `setCompatDraft` 一遍 | 删除冗余填充 |
+| O4 | 低 | `httpRequestText` 代理 | `urlMod.parse`（废弃 API）+ 默认端口臆造 8080 | `new URL` 解析，默认端口按协议推断（443/80）；解析失败按直连 |
+| O5 | 低 | `build.mjs` | 硬编码版本 `'0.1.0'`——升版本要同步改 3 处 | host 导出 `VERSION`，build 比对 package.json 与之同步 |
+| O6/O7/O8 | 低 | client | fetch 无超时（bootstrap 挂死=页面卡死）；数字输入不校验（`Number('abc')=NaN` 被 host 静默按未填处理）；`data.npmUrl` 死代码 | 默认 120s 超时（test-model 11 分钟）；`/^\d+$/` 就地校验报错；删除死分支 |
+
 DSH 升级后的维护点：
 
 1. `lib/catalog-routes.js` 的内置 route 名单（40 个）；`apply()` 会 best-effort 用实测名单覆盖，取不到就沿用静态名单。

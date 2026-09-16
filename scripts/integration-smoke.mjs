@@ -108,6 +108,11 @@ const OPENROUTER_BODY = {
 const catalogServer = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
   hits.byPath[url.pathname] = (hits.byPath[url.pathname] || 0) + 1
+  // M2 专用：拖 4 秒再 404 的"慢失败"源（≥ PATCH_CATALOG_WAIT_MS 视为慢失败）
+  if (url.pathname === '/slow-fail.json') {
+    setTimeout(() => { res.writeHead(404); res.end('nope') }, 4000)
+    return
+  }
   let body = null
   if (url.pathname === '/models-dev.json') { hits.modelsDev += 1; body = MODELS_DEV_BODY }
   else if (url.pathname === '/litellm.json') { hits.litellm += 1; body = LITELLM_BODY }
@@ -170,6 +175,15 @@ function makeSettings(initialSection, options) {
       opts.fail[mode] = fail - 1
       const err = new Error('simulated failure (' + mode + ')')
       err.code = 'SIMULATED_' + mode.toUpperCase()
+      throw err
+    }
+    // opts.conflict[mode]：强制抛一次 CAS 冲突（B2 的 409 回归用）
+    const forcedConflict = opts.conflict && opts.conflict[mode]
+    if (forcedConflict) {
+      opts.conflict[mode] = forcedConflict - 1
+      const err = new Error('settings conflict for "llm-pi-ai": forced conflict (' + mode + ')')
+      err.name = 'SettingsConflictError'
+      err.code = 'SETTINGS_CONFLICT'
       throw err
     }
     if (expectedRevision !== undefined && expectedRevision !== state.revision) {
@@ -321,7 +335,7 @@ async function makeHarness(initialSection, options) {
         writeHead(status, h) { res.statusCode = status; res.headers = h },
         end(chunk) {
           res.body = chunk
-          try { resolve({ status: res.statusCode, json: JSON.parse(chunk) }) } catch (e) { reject(e) }
+          try { resolve({ status: res.statusCode, json: JSON.parse(chunk), headers: res.headers || {} }) } catch (e) { reject(e) }
         },
       }
       route.handler(req, res)
@@ -410,6 +424,7 @@ check(bootHub.defaultsConfigured.contextWindow === false, 'defaultsConfigured fa
 check(bootHub.headersCount === 0 && bootHub.retryPolicy === null, 'headersCount / retryPolicy initial')
 check(bootHub.retryLabel === '默认 5 次', 'unconfigured retry label matches the real dsh-llm default (DEFAULT_MAX_RETRIES = 5), got: ' + bootHub.retryLabel)
 check(r.json.defaults.providerMaxRetries === 5, 'bootstrap.defaults.providerMaxRetries = 5')
+check((r.headers || {})['cache-control'] === 'no-store', 'M7: API responses carry cache-control: no-store')
 
 // 405 / 403 / 404 语义
 let bad = await h.post('/api/suite/bootstrap', {})
@@ -422,6 +437,9 @@ bad = await h.post('/api/suite/save-model', {}, { origin: 'http://127.0.0.1:3080
 check(bad.status === 400, 'same-origin POST passes the fence (400 for a bad body)')
 bad = await h.post('/api/suite/delete-model', { provider: 'hub-gm', modelId: 'nope' })
 check(bad.status === 404, 'delete-model on a missing id returns 404')
+// M3：超限 body → 400（排干而不是销毁连接——响应必须能送达）
+bad = await h.post('/api/suite/save-model', { provider: 'hub-gm', modelId: 'x', editor: 'y'.repeat(300 * 1024) })
+check(bad.status === 400 && /body-too-large/.test(bad.json.error), 'M3: an oversized body is rejected with a deliverable 400')
 bad = await h.post('/api/suite/save-model', { provider: 'ghost', modelId: 'x', editor: {} })
 check(bad.status === 400 && /渠道不存在/.test(bad.json.error), 'save-model on an unknown provider returns 400')
 
@@ -685,6 +703,15 @@ try {
 check(conflictError && conflictError.name === 'SettingsConflictError', 'CAS conflict propagates unchanged (no silent retry)')
 conflictHarness.runDispose()
 
+// B2：经 HTTP 端点的 CAS 冲突必须返回 409（README §8 承诺的终端状态码），而不是 400
+const httpConflict = await makeHarness(INITIAL, { conflict: { update: 1 } })
+let cfr = await httpConflict.post('/api/suite/save-model', {
+  provider: 'hub-gm', modelId: 'glm-5.3',
+  editor: { disabled: true, levels: [], vision: false, contextWindow: 0, maxTokens: 0 },
+})
+check(cfr.status === 409 && /刷新后重试/.test(cfr.json.error), 'B2: an HTTP CAS conflict returns 409 with the refresh hint (got ' + cfr.status + ' ' + JSON.stringify(cfr.json.error) + ')')
+httpConflict.runDispose()
+
 /* ═══════════════ 7. 链路一：discoverModels ═══════════════ */
 
 const spec = new AbortController()
@@ -811,6 +838,46 @@ check(badAttempts >= 2, 'R5: a failing source is NOT cached and is retried on th
 check((hits.byPath['/models-dev.json'] || 0) > 1, 'a successful source IS cached (models.dev served from cache on the 2nd call)')
 badSrc.runDispose()
 
+// B1：三源全部失败（快速 404）不得把"空快照"缓存成新鲜聚合结果——
+// 下一次 bounded 调用（链路二保存）必须重新真实尝试，而不是被空快照挡 30 分钟。
+const ALL_BAD_PREF = {
+  modelsDevUrl: CATALOG_BASE + '/none-a.json',
+  litellmUrl: CATALOG_BASE + '/none-b.json',
+  openrouterUrl: CATALOG_BASE + '/none-c.json',
+  sources: { modelsDev: { enabled: true }, litellm: { enabled: true }, openrouter: { enabled: true } },
+}
+const allBad = await makeHarness({
+  __modelSuite: cloneJson(ALL_BAD_PREF),
+  providers: { 'hub-gm': { api: 'openai-completions', baseURL: 'https://hub.example.com/v1', models: [{ id: 'glm-5.3' }] } },
+})
+r = await allBad.post('/api/suite/enrich-models', { provider: 'hub-gm', apply: false })
+check(r.status === 200 && r.json.hitCount === 0 && r.json.sourceErrors && r.json.sourceErrors.modelsDev, 'B1: an all-sources failure reports per-source errors')
+const beforeNone = hits.byPath['/none-a.json'] || 0
+await allBad.settings.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', 'hub-gm', 'models'], value: [{ id: 'glm-5.3' }] }])
+check((hits.byPath['/none-a.json'] || 0) > beforeNone, 'B1: a total catalog failure is NOT cached as a fresh empty snapshot (the bounded path retries)')
+allBad.runDispose()
+
+// M2：**慢失败**（≥3s 的超时/挂起类）后进入冷却——bounded 热路径不再重复发起
+// 拉取（否则断网期间每次解析都白等 3 秒）；写入本身必须立刻放行。
+const slowBad = await makeHarness({
+  __modelSuite: {
+    modelsDevUrl: CATALOG_BASE + '/slow-fail.json',
+    litellmUrl: CATALOG_BASE + '/none-b.json',
+    openrouterUrl: CATALOG_BASE + '/none-c.json',
+    sources: { modelsDev: { enabled: true }, litellm: { enabled: true }, openrouter: { enabled: true } },
+  },
+  providers: { 'hub-gm': { api: 'openai-completions', baseURL: 'https://hub.example.com/v1', models: [{ id: 'glm-5.3' }] } },
+})
+r = await slowBad.post('/api/suite/enrich-models', { provider: 'hub-gm', apply: false })
+check(r.status === 200 && r.json.hitCount === 0, 'M2: a slow all-source failure still reports an empty catalog')
+const slowHits = hits.byPath['/slow-fail.json'] || 0
+check(slowHits >= 1, 'M2: the slow source was actually probed once')
+const slowStart = Date.now()
+await slowBad.settings.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', 'hub-gm', 'models'], value: [{ id: 'glm-5.3' }] }])
+check((hits.byPath['/slow-fail.json'] || 0) === slowHits, 'M2: the bounded hot path skips refetching during the slow-failure cooldown')
+check(Date.now() - slowStart < 3000, 'M2: the save is not stalled waiting for the catalog during cooldown')
+slowBad.runDispose()
+
 /* ═══════════════ 11. delete-model / add-models / save-sources / save-auto-config ═══════════════ */
 
 r = await h.post('/api/suite/delete-model', { provider: 'hub-gm', modelId: 'private-unknown-model' })
@@ -834,10 +901,61 @@ r = await emp.post('/api/suite/delete-model', { provider: 'hub-gm', modelId: 'on
 check(r.status === 200 && r.json.remaining === 0 && r.json.warnings.some((w) => /已无模型条目/.test(w)), 'deleting the last model is allowed but warns (#12)')
 emp.runDispose()
 
+// B4：官方页/手写 settings 存入的"字符集之外"的 id（如中文）必须仍能被删除
+// （先查表、查不到才做入参字符集校验——'a b' 不存在时依旧 400）
+const uni = await makeHarness({
+  __modelSuite: cloneJson(PREF),
+  providers: { 'hub-gm': { api: 'openai-completions', baseURL: 'https://hub.example.com/v1', models: [{ id: '中文模型-一号' }, { id: 'ok-model' }] } },
+})
+r = await uni.post('/api/suite/delete-model', { provider: 'hub-gm', modelId: '中文模型-一号' })
+check(r.status === 200 && r.json.remaining === 1, 'B4: a foreign id outside the plugin charset can still be deleted (got ' + r.status + ' ' + JSON.stringify(r.json.error) + ')')
+uni.runDispose()
+
+// B5：无 api（= 无 compat 字段表）的渠道上，空 compat 草稿绝不能清掉已有 compat
+const NOAPI_INITIAL = {
+  __modelSuite: cloneJson(PREF),
+  providers: { 'odd-gw': { baseURL: 'https://odd.example.com/v1', models: [{ id: 'm1', compat: { futureCompat: 'keep' } }] } },
+}
+const wh = await makeHarness(NOAPI_INITIAL)
+r = await wh.post('/api/suite/save-model', { provider: 'odd-gw', modelId: 'm1', editor: { disabled: false, levels: [], vision: false, name: 'Kept', compat: {} } })
+check(r.status === 200, 'B5: saving a model on a provider without api succeeds (' + JSON.stringify(r.json.error) + ')')
+const oddModels = wh.state.section.providers['odd-gw'].models
+check(oddModels[0].compat && oddModels[0].compat.futureCompat === 'keep', 'B5: an empty compat draft on a table-less protocol leaves model compat untouched')
+check(oddModels[0].name === 'Kept', 'B5: the name edit was still applied')
+wh.runDispose()
+
+// B6：保存一个模型不得抹掉其它条目（及自身）的未知/未来字段
+const FUT_INITIAL = {
+  __modelSuite: cloneJson(PREF),
+  providers: {
+    'hub-gm': {
+      api: 'openai-completions',
+      baseURL: 'https://hub.example.com/v1',
+      models: [
+        { id: 'glm-5.3' },
+        { id: 'glm-4.6', futureField: 42, compat: { futureCompat: 'keep' } },
+      ],
+    },
+  },
+}
+const fh = await makeHarness(FUT_INITIAL)
+r = await fh.post('/api/suite/save-model', { provider: 'hub-gm', modelId: 'glm-5.3', editor: { disabled: false, levels: [{ level: 'low', enabled: true, wire: 'low' }], vision: false, contextWindow: 1000, maxTokens: 100 } })
+check(r.status === 200, 'B6: saving one model succeeds')
+let sibling = fh.state.section.providers['hub-gm'].models.find((m) => m.id === 'glm-4.6')
+check(sibling.futureField === 42, 'B6: unknown fields on sibling entries survive a save')
+check(sibling.compat && sibling.compat.futureCompat === 'keep', 'B6: unknown compat fields on sibling entries survive a save')
+r = await fh.post('/api/suite/save-model', { provider: 'hub-gm', modelId: 'glm-4.6', editor: { disabled: false, levels: [], vision: false, name: 'Edited' } })
+check(r.status === 200, 'B6: editing the entry with unknown fields succeeds')
+sibling = fh.state.section.providers['hub-gm'].models.find((m) => m.id === 'glm-4.6')
+check(sibling.futureField === 42 && sibling.compat && sibling.compat.futureCompat === 'keep', 'B6: the edited entry keeps its own unknown fields')
+fh.runDispose()
+
 r = await h.post('/api/suite/add-models', { provider: 'hub-gm', models: [{ id: 'new-model-x', contextWindow: 1000, name: 'New' }] })
 check(r.status === 200 && r.json.addedCount === 1, 'add-models appends: ' + JSON.stringify(r.json).slice(0, 160))
 r = await h.post('/api/suite/add-models', { provider: 'hub-gm', models: [{ id: 'new-model-x' }] })
 check(r.status === 200 && r.json.skipped === true, 'add-models skips duplicates')
+bad = await h.post('/api/suite/add-models', { provider: 'hub-gm', models: [{ id: 'bad id!' }] })
+check(bad.status === 400 && /非法字符/.test(bad.json.error), 'B3: add-models rejects an illegal id charset (same whitelist as delete-model)')
 
 bad = await h.post('/api/suite/save-sources', { sources: { litellm: { url: 'http://insecure.example.com/l.json' } } })
 check(bad.status === 400, 'save-sources rejects a non-HTTPS url: ' + JSON.stringify(bad.json))
@@ -933,6 +1051,12 @@ check(listingHits.headers.authorization === 'Bearer sk-local-1234567890', 'a sto
 check(listingHits.headers['content-type'] !== 'text/plain', 'a stored Content-Type cannot mislabel the probe request')
 check(r.json.candidates.find((c) => c.id === 'Llama-3.1-8B').isNew === false, 'case-insensitive dedupe: an existing mixed-case id is recognised as known')
 check(r.json.newCount === 0 && r.json.knownCount === 2, 'refresh-models reports 0 new / 2 known')
+
+// B7：discover-models 带 provider 时复用渠道已存的 baseURL / 凭据 / 自定义请求头
+r = await dh.post('/api/suite/discover-models', { provider: 'local-gw', api: 'openai-completions', enrich: false })
+check(r.status === 200 && r.json.count === 2, 'B7: discover-models with provider reuses the stored baseURL (' + JSON.stringify(r.json.error || r.json.count) + ')')
+check(listingHits.headers.authorization === 'Bearer sk-local-1234567890', 'B7: discover-models resolves the stored credential (previously always 401 on protected gateways)')
+check(listingHits.headers['x-title'] === 'suite-test', 'B7: discover-models sends the route custom headers')
 
 // 大小写保留：保存 / 定位 / 删除
 r = await dh.post('/api/suite/save-model', { provider: 'local-gw', modelId: 'Llama-3.1-8B', editor: { name: 'Renamed', disabled: false, levels: [], vision: false, contextWindow: 1000, maxTokens: 100 } })
