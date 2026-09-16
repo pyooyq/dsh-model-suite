@@ -1,5 +1,7 @@
 # dsh-model-suite
 
+English | [简体中文](README.zh.md)
+
 > A DSH Web plugin: **Model Suite** — one settings page for the whole model-configuration surface: per-model editing (including the **reasoning levels** and **compat switches** the official page cannot touch), route-level advanced settings, three-source catalog sync, and **automatic parameter completion** for custom gateways.
 
 > Built upon [cinob/dsh-plugin-custom-provider-enhancer](https://github.com/cinob/dsh-plugin-custom-provider-enhancer) and [kingsunb/dsh-model-plus](https://github.com/kingsunb/dsh-model-plus) — many thanks to the authors of both predecessors.
@@ -31,20 +33,26 @@ Typical case: an OpenAI-compatible gateway rejects the `developer` role and chat
 
 ## 2. Install
 
+As a standard DSH Profile Bundle, install from GitHub in one command (auto-mounted):
+
 ```sh
-# Repo layout: the catalog snapshot api.json sits at the repo root, dsh-model-suite/ is the package
-dsh plugin --profile web add link:<absolute-path>/dsh-model-suite
+dsh plugin --profile web add github:pyooyq/dsh-model-suite
 dsh web
 ```
 
-Or, once published:
+Or from npm (once published):
 
 ```sh
 dsh plugin --profile web add dsh-model-suite
 dsh web
 ```
 
-> ⚠️ `link:` must point at the **package** directory (the one holding `package.json`); pointing at the repo root will not find the `dsh` declaration.
+For local development, link works too (the repo root is the package directory holding `package.json`):
+
+```sh
+dsh plugin --profile web add link:<absolute-path>/dsh-model-suite
+dsh web
+```
 
 ---
 

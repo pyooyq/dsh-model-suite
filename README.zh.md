@@ -1,5 +1,7 @@
 # dsh-model-suite
 
+[English](README.md) | 简体中文
+
 > DSH Web 插件：**模型套件** —— 一个页面覆盖模型配置的全部面：逐模型编辑（含官方页做不到的**思考档位**与**兼容开关**）、渠道级高级设置、三源目录一键同步，以及对自定义渠道的**自动参数补全**。
 
 > 本项目基于 [cinob/dsh-plugin-custom-provider-enhancer](https://github.com/cinob/dsh-plugin-custom-provider-enhancer) 与 [kingsunb/dsh-model-plus](https://github.com/kingsunb/dsh-model-plus) 整合重构而来，感谢两个前身项目的作者。
@@ -31,20 +33,26 @@ DSH 官方「模型」页负责供应商与模型条目的基础字段，但**�
 
 ## 2. 安装
 
+作为标准 DSH Profile Bundle 组合包，从 GitHub 一键安装并自动挂载：
+
 ```sh
-# 仓库根（即包目录）放 api.json 快照，供国内加速源读取
-dsh plugin --profile web add link:<绝对路径>/dsh-model-suite
+dsh plugin --profile web add github:pyooyq/dsh-model-suite
 dsh web
 ```
 
-或发布后：
+或从 npm 安装（发布后）：
 
 ```sh
 dsh plugin --profile web add dsh-model-suite
 dsh web
 ```
 
-> ⚠️ `link:` 必须指到**包目录**（含 `package.json` 的那一层），指到仓库根会找不到 `dsh` 声明。
+本地开发可用 link（仓库根即包目录，含 `package.json` 的那一层）：
+
+```sh
+dsh plugin --profile web add link:<绝对路径>/dsh-model-suite
+dsh web
+```
 
 ---
 
