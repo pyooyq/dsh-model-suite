@@ -5,7 +5,8 @@
  * __ModuleLoader__ 工厂）、lib/catalog-routes.js、lib/compat-fields.js 都是手写
  * JavaScript，不需要 TypeScript / 打包器。本脚本只做形状与回归校验，不产出文件。
  *
- * 运行：`node scripts/build.mjs`（也挂在 package.json 的 `prepare` 上）
+ * 运行：`node scripts/build.mjs`（发布时挂在 package.json 的 `prepublishOnly` 上；
+ * 刻意不用 `prepare`——git 源安装也会触发 prepare，会被 pnpm 的构建脚本白名单拦下）
  *
  * 校验项（对应开发文档 §14.1）：
  *   1. 必需文件存在；

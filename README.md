@@ -167,7 +167,7 @@ Status codes: `400` validation · `403` trust fence · `404` unknown route/model
 ## 9. Development and verification
 
 ```sh
-node scripts/build.mjs             # shape + field-count validation (also the prepare script)
+node scripts/build.mjs             # shape + field-count validation (runs on publish; deliberately NOT prepare — prepare gets blocked by pnpm's build allowlist on git installs)
 node scripts/security-smoke.mjs    # security and invariant regression (real behaviour)
 node scripts/integration-smoke.mjs # drives apply(ctx): 14 endpoints + all three chains
 node scripts/ui-smoke.mjs          # headless render of the browser half (mini React + tree clicks)

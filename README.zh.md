@@ -195,7 +195,7 @@ curl -fsSL https://models.dev/api.json -o api.json
 ## 9. 开发与校验
 
 ```sh
-node scripts/build.mjs             # 形状与字段数校验（package.json 的 prepare 也跑它）
+node scripts/build.mjs             # 形状与字段数校验（发布时自动跑；刻意不用 prepare，避免 git 安装被 pnpm 拦截）
 node scripts/security-smoke.mjs    # 安全与不变量回归（含真实行为断言）
 node scripts/integration-smoke.mjs # 用真实 apply(ctx) 驱动 14 端点 + 三链路
 node scripts/ui-smoke.mjs          # 无头渲染浏览器半区（极小 React 替身 + 树遍历点击）

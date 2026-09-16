@@ -27,7 +27,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "prepare": "node scripts/build.mjs",
+    "prepublishOnly": "node scripts/build.mjs",
     "smoke": "node scripts/security-smoke.mjs",
     "smoke:integration": "node scripts/integration-smoke.mjs",
     "smoke:ui": "node scripts/ui-smoke.mjs",
