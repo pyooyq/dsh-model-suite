@@ -160,10 +160,11 @@ curl -fsSL https://models.dev/api.json -o api.json
 
 ## 7. 安全模型
 
+- **Host 头栅栏（全部端点，读+写）**：`Host` 必须是 loopback 字面量（`localhost` / `127.0.0.0/8` / `::1`），否则 `403 untrusted host header`。防 DNS rebinding——平台 webServer 不校验 Host，且 rebinding 下 `Origin` 与 `Host` 同为攻击者域名，Origin≈Host 一致性检查会放行；`bootstrap`/`list-models` 会返回 baseURL 与自定义请求头明文，读端点同样必须拦。**部署约束：本插件端点仅支持 loopback 访问**（DSH web 默认绑定 `127.0.0.1`，满足；`0.0.0.0` 局域网访问不受支持）。
 - **写端点信任栅栏**：有 `Origin` 必须与 `Host` 同源（协议 + 主机 + 端口逐项比较，绝不做后缀匹配）；无 `Origin` 仅允许 loopback 远端，否则 `403 unauthenticated write denied`。
 - **出站策略**：仅 `http`/`https`；拒绝 URL 内嵌凭据、云元数据/链路本地地址、非 loopback 的明文 HTTP；目录拉取强制 HTTPS。
-- **重定向**：最多 5 跳、总截止时间逐跳扣减、携带凭据禁止跨源重定向、HTTPS 禁止降级。
-- **输入校验**：模型 id / 显示名长度与字符集白名单；请求头名 RFC 7230 token、值禁换行、总长 ≤ 8 KB；compat 字段只接受当前协议 `gate === 'offer'` 的字段与合法值类型（协议不支持 → `400`，**不静默丢弃**）。
+- **重定向**：最多 5 跳、总截止时间逐跳扣减、**携带任何非默认请求头（凭据或自定义网关头）禁止跨源重定向**、HTTPS 禁止降级。
+- **输入校验**：模型 id / 显示名长度与字符集白名单；请求头名 RFC 7230 token、值禁换行、总长 ≤ 8 KB（UTF-8 字节口径，客户端与服务端一致）；compat 字段只接受当前协议 `gate === 'offer'` 的字段与合法值类型（协议不支持 → `400`，**不静默丢弃**）。
 - **输出消毒**：诊断文本中的凭据 → `[redacted]`、`sk-*` → `[redacted-key]`；对外错误里的 URL → `[remote-url]`、路径 → `[path]`、截断 512；SVG 拒绝 `<script` / `on*=` / `javascript:`。
 - ⚠️ 这不是完整会话认证：本机任意进程仍可无 `Origin` 直连写配置（明确的取舍，与 `dsh-model-plus` 一致）。
 
@@ -188,7 +189,7 @@ curl -fsSL https://models.dev/api.json -o api.json
 | 13 | POST | `/test-model` | 真调一次模型 API | — |
 | 14 | GET | `/check-update` | 查 npm 最新版 | — |
 
-错误码：`400` 入参校验失败 · `403` 写栅栏拒绝 · `404` 渠道/模型不存在 · `405` 方法不匹配 · `409` CAS 冲突（**终态，不自动重试**）· `500` 内部异常（已脱敏）。
+错误码：`400` 入参校验失败 · `403` 栅栏拒绝（Host 栅栏 / 写栅栏） · `404` 渠道/模型不存在 · `405` 方法不匹配 · `409` CAS 冲突（**终态，不自动重试**）· `500` 内部异常（已脱敏）。
 
 ---
 
@@ -255,6 +256,24 @@ v0.1.0 在交付后做了一遍全量代码复审，以下为**行为相关**的
 | O4 | 低 | `httpRequestText` 代理 | `urlMod.parse`（废弃 API）+ 默认端口臆造 8080 | `new URL` 解析，默认端口按协议推断（443/80）；解析失败按直连 |
 | O5 | 低 | `build.mjs` | 硬编码版本 `'0.1.0'`——升版本要同步改 3 处 | host 导出 `VERSION`，build 比对 package.json 与之同步 |
 | O6/O7/O8 | 低 | client | fetch 无超时（bootstrap 挂死=页面卡死）；数字输入不校验（`Number('abc')=NaN` 被 host 静默按未填处理）；`data.npmUrl` 死代码 | 默认 120s 超时（test-model 11 分钟）；`/^\d+$/` 就地校验报错；删除死分支 |
+
+### 9.3 第三轮复审修正记录（高→中→低）
+
+对二轮修复后的代码再做一次全量通读（含平台 `dsh-host-webserver` 源码核对），修复 1 高 / 4 中 / 6 低：
+
+| # | 级别 | 位置 | 问题 | 修正 |
+| :-- | :-- | :-- | :-- | :-- |
+| H1 | 高 | `getRoute` / `postRoute` / `assertTrustedWriteRequest` | **DNS rebinding 可绕过写栅栏**：栅栏只验证 `Origin≈Host` 一致（防 CSRF），rebinding 下两者同为攻击者域名且远端恰为本机浏览器 → 写放行；且 `GET /bootstrap`、`GET /list-models` **完全无信任检查**，明文返回 baseURL 与自定义请求头（可能含网关凭据）。已实测平台 webServer 按 pathname 分发、不校验 Host | 全部 `/api/suite/*`（读+写）加 **Host 头栅栏**：必须是 loopback 字面量，否则 `403 untrusted host header`；文档明确 loopback-only 部署约束 |
+| M1 | 中 | `saveFromEditor` compat 合并 | B6 的"表外字段带回"用**全协议并集**判定"已知"——手写的跨协议 compat（如 openai-completions 模型上的 `supportsTemperature`）被误判为"本次提交已管辖"而遭静默清除 | 判定改用**当前协议**的 `COMPAT_OFFER[api]`：本协议字段由提交管辖，跨协议/未知字段原样带回 |
+| M2 | 中 | client `switchProvider` | 切渠道重置了 refresh 面板全套状态，却**没重置「手动添加模型」面板**——切到 B 后重开面板仍显示 A 的探测候选（全勾选），确认后把 A 的模型加进 B | `switchProvider` 调用 `resetAddForm()` |
+| M3 | 中 | client `fillAdvancedFromProvider` | 切渠道会连带重置「目录源 / 自动配置」两张**全局**卡的未保存输入（它们与渠道无关） | 全局草稿只在首次挂载（`reload`）回填；切渠道只重置四张渠道级卡 |
+| M4 | 中 | `addProviderModels` / `enrichProviderModels` / `deleteModel` | O2 只修了 `listModels`：这三处仍 `next.map(modelView)` 逐模型 `readAuto()→settings.get` 全量 resolve（大渠道删一个模型 = 几百次 resolve） | 各端点 `readAuto()` 一次传 `autoCfg` |
+| L1 | 低 | `testModel` 思考参数 | 只特判 openrouter/deepseek，其余 thinkingFormat 一律发 `reasoning_effort`——qwen/zai/together 等格式端点因未知字段 400（假故障）；anthropic 分支忽略 effort 但 UI 显示「已用 X」 | 按 pi-ai wire 表逐格式编码（qwen→`enable_thinking`、zai→`thinking:{type,clear_thinking}`、together→`reasoning:{enabled}`、string-thinking→`thinking:<string>`、qwen-chat-template→`chat_template_kwargs`）；chat-template/baseten 无法可靠构造 → 不注入并返回 `effortApplied:false`，客户端据此不再显示「已用 X」 |
+| L2 | 低 | `discoverModels` | 空串 `api` 会覆盖渠道真实协议（`str('', fallback)` 返回空串 → 兜底 openai-completions），拿错误协议探测 anthropic 渠道 | 空串视为"未提供"，回落 `profile.api` |
+| L3 | 低 | 重定向敏感头判定 | 只把保留名（authorization 等）当敏感——自定义网关头（X-Gateway-Key）在网关 302 到其它 origin 时被原样转发 | 跨域重定向时**除 accept/user-agent/content-length 外一律拒绝** |
+| L4 | 低 | client 请求头校验 | 8KB 检查用 `.length`（UTF-16 码元）与 host 的 `Buffer.byteLength`（UTF-8）口径不一致；客户端保留头名单比 host 宽（cookie/origin 等），出现"客户端警告、host 照收"的分裂 | 客户端改 `TextEncoder` 字节口径；保留头名单与 host 逐项对齐 |
+| L5 | 低 | `deleteModel` / `enrichProviderModels` | 缺 provider 时报「渠道不存在」（应为「缺少 provider」）；局部 `const apply` 遮蔽模块级导出的 `apply(ctx)` | 文案修正；改名 `applyNow` |
+| L6 | 低 | client `saveModel` / host `normalizeEditor` | 超长数字串（>1e308）解析成 `Infinity`，host 按"未填"静默处理 → 旧值原样保留，用户以为改成功了 | 客户端 `Number.isFinite` 就地报错；host 对非有限数字直接 400 |
 
 DSH 升级后的维护点：
 

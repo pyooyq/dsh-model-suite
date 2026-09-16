@@ -343,7 +343,7 @@ async function makeHarness(initialSection, options) {
     })
   }
 
-  async function get(path) { return dispatch(path, 'GET') }
+  async function get(path, headers) { return dispatch(path, 'GET', undefined, headers) }
   async function post(path, body, headers) { return dispatch(path, 'POST', body === undefined ? {} : body, headers) }
   function runDispose() { for (const fn of disposeHandlers) fn(); for (const d of disposers) d.dispose() }
 
@@ -404,7 +404,7 @@ check(!paths.some((p) => /save-provider$/.test(p)), 'no legacy save-provider rou
 let r = await h.get('/api/suite/bootstrap')
 check(r.status === 200 && r.json.ok !== false, 'bootstrap returns 200')
 check(r.json.writable === true, 'bootstrap.writable true')
-check(r.json.version === '0.1.0', 'bootstrap.version')
+check(r.json.version === h.mod.VERSION && h.mod.VERSION === '0.1.1', 'bootstrap.version mirrors the lib VERSION export (0.1.1)')
 check(JSON.stringify(r.json.levels) === '["off","minimal","low","medium","high","xhigh","max"]', 'bootstrap.levels = 7 thinking levels')
 check(r.json.protocols.length === 3 && r.json.listableProtocols.length === 2, 'bootstrap protocols')
 check(Array.isArray(r.json.compatFields['openai-completions']) && r.json.compatFields['openai-completions'].length === 19, 'bootstrap.compatFields[openai-completions] = 19')
@@ -435,6 +435,16 @@ bad = await h.post('/api/suite/save-model', {}, { origin: 'http://evil.example.c
 check(bad.status === 403, 'cross-origin POST rejected with 403: ' + JSON.stringify(bad.json))
 bad = await h.post('/api/suite/save-model', {}, { origin: 'http://127.0.0.1:3080' })
 check(bad.status === 400, 'same-origin POST passes the fence (400 for a bad body)')
+// H1（三轮）：Host 头栅栏——DNS rebinding 下 Origin 与 Host 同为攻击者域名，
+// 旧的 Origin≈Host 一致性检查会放行；必须靠「Host 必须是 loopback 字面量」拦下。
+bad = await h.get('/api/suite/bootstrap', { host: 'evil.example.com:3080' })
+check(bad.status === 403 && /host/i.test(bad.json.error), 'H1: GET with a rebinding Host is rejected with 403 (bootstrap leaks baseURLs/headers)')
+bad = await h.get('/api/suite/bootstrap', { host: 'localhost:3080' })
+check(bad.status === 200, 'H1: a loopback Host (localhost) passes the GET gate')
+bad = await h.get('/api/suite/bootstrap', { host: '127.0.0.1.evil.com:3080' })
+check(bad.status === 403, 'H1: suffix trick on the Host header is rejected')
+bad = await h.post('/api/suite/save-model', { provider: 'hub-gm', modelId: 'x', editor: {} }, { host: 'evil.example.com:3080', origin: 'http://evil.example.com:3080' })
+check(bad.status === 403 && /host/i.test(bad.json.error), 'H1: a full rebinding write (Origin==Host==evil, loopback remote) is blocked by the Host gate')
 bad = await h.post('/api/suite/delete-model', { provider: 'hub-gm', modelId: 'nope' })
 check(bad.status === 404, 'delete-model on a missing id returns 404')
 // M3：超限 body → 400（排干而不是销毁连接——响应必须能送达）
@@ -950,6 +960,29 @@ sibling = fh.state.section.providers['hub-gm'].models.find((m) => m.id === 'glm-
 check(sibling.futureField === 42 && sibling.compat && sibling.compat.futureCompat === 'keep', 'B6: the edited entry keeps its own unknown fields')
 fh.runDispose()
 
+// M1（三轮）：跨协议 compat 字段——手写在 openai-completions 模型上的 anthropic
+// 表字段（supportsTemperature）——不得在一次无关编辑中被抹掉。"已知"必须按
+// **当前协议**的 offer 判定，而不是全协议并集（并集会让它被误判为"本次提交已管辖"）。
+const CROSS_INITIAL = {
+  __modelSuite: cloneJson(PREF),
+  providers: {
+    'hub-gm': {
+      api: 'openai-completions',
+      baseURL: 'https://hub.example.com/v1',
+      models: [{ id: 'glm-5.3', compat: { supportsTemperature: true, futureCompat: 'keep', supportsStore: true } }],
+    },
+  },
+}
+const ch = await makeHarness(CROSS_INITIAL)
+r = await ch.post('/api/suite/save-model', { provider: 'hub-gm', modelId: 'glm-5.3', editor: { disabled: false, levels: [], vision: false, name: 'Edited', compat: { supportsStore: false } } })
+check(r.status === 200, 'M1: saving with a current-protocol compat payload succeeds (' + JSON.stringify(r.json.error) + ')')
+const crossModel = ch.state.section.providers['hub-gm'].models[0]
+check(crossModel.name === 'Edited', 'M1: the unrelated edit applied')
+check(crossModel.compat.supportsStore === false, 'M1: the submitted current-protocol field is updated')
+check(crossModel.compat.supportsTemperature === true, 'M1: a hand-written CROSS-protocol compat field survives the edit (was silently dropped before)')
+check(crossModel.compat.futureCompat === 'keep', 'M1: unknown future compat fields still survive (B6 intact)')
+ch.runDispose()
+
 r = await h.post('/api/suite/add-models', { provider: 'hub-gm', models: [{ id: 'new-model-x', contextWindow: 1000, name: 'New' }] })
 check(r.status === 200 && r.json.addedCount === 1, 'add-models appends: ' + JSON.stringify(r.json).slice(0, 160))
 r = await h.post('/api/suite/add-models', { provider: 'hub-gm', models: [{ id: 'new-model-x' }] })
@@ -981,12 +1014,68 @@ bad = await h.post('/api/suite/test-model', { provider: 'hub-gm', modelId: 'glm-
 check(bad.status === 400 && /8000/.test(bad.json.error), 'test-model caps the prompt length (#13 input sanitisation)')
 check(h.state.section.__modelSuite.auto.fields.input === false, 'test-model rejects before any write')
 
+// L1（三轮）：testModel 按 pi-ai 的 thinkingFormat wire 表逐格式编码，并如实
+// 报告 effortApplied——此前只特判 openrouter/deepseek，其余格式一律发
+// reasoning_effort，qwen/zai/together 类端点会因未知字段 400（假故障）。
+const chatBodies = []
+const chatServer = http.createServer((req, res) => {
+  let raw = ''
+  req.on('data', (c) => { raw += c })
+  req.on('end', () => {
+    try { chatBodies.push(JSON.parse(raw)) } catch (_) { chatBodies.push(null) }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+  })
+})
+await new Promise((resolve) => chatServer.listen(0, '127.0.0.1', resolve))
+const CHAT_BASE = 'http://127.0.0.1:' + chatServer.address().port
+const THINK_INITIAL = {
+  __modelSuite: cloneJson(PREF),
+  providers: {
+    'think-gw': {
+      api: 'openai-completions',
+      baseURL: CHAT_BASE,
+      models: [
+        { id: 'plain-model' },
+        { id: 'qwen-model', compat: { thinkingFormat: 'qwen' } },
+        { id: 'ct-model', compat: { thinkingFormat: 'chat-template' } },
+      ],
+    },
+  },
+}
+const tg = await makeHarness(THINK_INITIAL)
+chatBodies.length = 0
+r = await tg.post('/api/suite/test-model', { provider: 'think-gw', modelId: 'plain-model', effort: 'high' })
+check(r.status === 200 && r.json.ok === true, 'L1: a default-format test succeeds end to end (' + JSON.stringify(r.json.error) + ')')
+check(chatBodies.length === 1 && chatBodies[0].reasoning_effort === 'high', 'L1: default/openai format sends reasoning_effort')
+check(r.json.effortApplied === true, 'L1: default format reports effortApplied=true')
+chatBodies.length = 0
+r = await tg.post('/api/suite/test-model', { provider: 'think-gw', modelId: 'qwen-model', effort: 'high' })
+check(chatBodies.length === 1 && chatBodies[0].enable_thinking === true && chatBodies[0].reasoning_effort === undefined, 'L1: qwen format sends enable_thinking and no stray reasoning_effort (supportsReasoningEffort unset)')
+check(r.json.effortApplied === true, 'L1: qwen format reports effortApplied=true')
+chatBodies.length = 0
+r = await tg.post('/api/suite/test-model', { provider: 'think-gw', modelId: 'ct-model', effort: 'high' })
+check(chatBodies.length === 1 && chatBodies[0].reasoning_effort === undefined && chatBodies[0].thinking === undefined && chatBodies[0].reasoning === undefined, 'L1: chat-template injects no half-guessed thinking params')
+check(r.json.effortApplied === false, 'L1: chat-template honestly reports effortApplied=false (needs user-configured $var kwargs)')
+tg.runDispose()
+
 /* ═══════════════ 13. discover-models / refresh-models 参数校验 ═══════════════ */
 
 bad = await h.post('/api/suite/discover-models', { baseURL: 'https://x.example.com/v1', api: 'anthropic-messages' })
 check(bad.status === 400 && /不支持自动获取/.test(bad.json.error), 'discover-models rejects a non-listable protocol')
 bad = await h.post('/api/suite/discover-models', { baseURL: 'http://insecure.example.com/v1', api: 'openai-completions' })
 check(bad.status === 400, 'discover-models rejects a non-https draft baseURL')
+// L2（三轮）：空串 api 视为"未提供"——回落渠道真实协议，而不是拿
+// openai-completions 去乱探一个 anthropic-messages 渠道。
+{
+  const antH = await makeHarness({
+    __modelSuite: cloneJson(PREF),
+    providers: { 'ant-gw': { api: 'anthropic-messages', baseURL: 'https://ant.example.com/v1', models: [{ id: 'claude-x' }] } },
+  })
+  bad = await antH.post('/api/suite/discover-models', { provider: 'ant-gw', api: '' })
+  check(bad.status === 400 && /anthropic-messages[\s\S]*不支持自动获取/.test(bad.json.error), 'L2: an empty-string api falls back to the provider protocol (got: ' + JSON.stringify(bad.json.error) + ')')
+  antH.runDispose()
+}
 bad = await h.post('/api/suite/refresh-models', { provider: 'ghost' })
 check(bad.status === 400 && /渠道不存在/.test(bad.json.error), 'refresh-models unknown provider')
 
@@ -1251,4 +1340,5 @@ frozen.runDispose()
 
 catalogServer.close()
 listingServer.close()
+chatServer.close()
 console.log('[integration] OK — ' + checks + ' checks passed')

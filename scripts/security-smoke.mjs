@@ -41,9 +41,9 @@ const routesMod = await import(pathToFileURL(join(root, 'lib/catalog-routes.js')
 const compatMod = await import(pathToFileURL(join(root, 'lib/compat-fields.js')).href + '?smoke=' + Date.now())
 
 const EXPORTED = [
-  'parseHostHeader', 'isLoopbackHostname', 'sameUrlOrigin', 'hasSensitiveRequestHeaders',
+  'parseHostHeader', 'isLoopbackHostname', 'sameUrlOrigin', 'hasCrossOriginUnsafeHeaders',
   'isLoopbackRemoteAddress', 'isBlockedOutboundHostname', 'assertOutboundUrlAllowed',
-  'sameOriginHost', 'routeError', 'isMissingValue', 'positiveInteger', 'compareVersion',
+  'sameOriginHost', 'isLoopbackHostHeader', 'routeError', 'isMissingValue', 'positiveInteger', 'compareVersion',
   'normalizeModelIdKey', 'normalizeModelIdLoose', 'isSafeModelId',
   'sanitizeEfforts', 'buildEfforts', 'highestNonOff', 'effortsToInfoArray',
   'validateCompatValueFor', 'sanitizeCompatFieldValue', 'cloneModel', 'compatKeyCount',
@@ -100,10 +100,10 @@ threw = false
 try { H.assertOutboundUrlAllowed('http://models.dev/api.json', { requireHttps: true }) } catch { threw = true }
 assert(threw, 'requireHttps must reject http')
 
-// A3. 敏感头 + 同源比较
-assert(H.hasSensitiveRequestHeaders({ Authorization: 'Bearer x' }), 'authorization is sensitive')
-assert(H.hasSensitiveRequestHeaders({ 'x-api-key': 'k' }), 'x-api-key is sensitive')
-assert(!H.hasSensitiveRequestHeaders({ accept: 'json' }), 'accept is not sensitive')
+// A3. 敏感头 + 同源比较 + Host 栅栏（H1）
+assert(H.hasCrossOriginUnsafeHeaders({ Authorization: 'Bearer x' }), 'authorization is redirect-unsafe')
+assert(H.hasCrossOriginUnsafeHeaders({ 'x-gateway-key': 'k' }), 'L3: a custom gateway header is redirect-unsafe too')
+assert(!H.hasCrossOriginUnsafeHeaders({ accept: 'json' }), 'bare accept is redirect-safe')
 assert(H.sameUrlOrigin('https://a.com/x', 'https://a.com/y'), 'same origin')
 assert(!H.sameUrlOrigin('https://a.com/x', 'https://evil.com/x'), 'cross host')
 assert(!H.sameUrlOrigin('https://a.com/x', 'http://a.com/x'), 'cross scheme')
@@ -111,6 +111,16 @@ assert(!H.sameUrlOrigin('http://127.0.0.1:3001/x', 'http://127.0.0.1:3002/x'), '
 assert(H.sameOriginHost('http://127.0.0.1:3080', '127.0.0.1:3080'), 'same origin host')
 assert(!H.sameOriginHost('http://evil.com', '127.0.0.1:3080'), 'evil origin rejected')
 assert(!H.sameOriginHost('http://127.0.0.1:3080.evil.com', '127.0.0.1:3080'), 'suffix trick rejected')
+// H1：Host 头必须是 loopback 字面量（DNS rebinding 下 Origin≈Host 一致性检查失效）
+assert(H.isLoopbackHostHeader('127.0.0.1:3080'), 'H1: 127.0.0.1 host allowed')
+assert(H.isLoopbackHostHeader('localhost:3080'), 'H1: localhost host allowed')
+assert(H.isLoopbackHostHeader('[::1]:3080'), 'H1: [::1] host allowed')
+assert(H.isLoopbackHostHeader('127.0.0.7'), 'H1: 127/8 host without port allowed')
+assert(!H.isLoopbackHostHeader('evil.example.com:3080'), 'H1: a rebinding host name is rejected')
+assert(!H.isLoopbackHostHeader('127.0.0.1.evil.com:3080'), 'H1: suffix trick rejected')
+assert(!H.isLoopbackHostHeader(''), 'H1: missing host rejected')
+assert(!H.isLoopbackHostHeader('user@127.0.0.1:3080'), 'H1: userinfo in host rejected')
+assert(!H.isLoopbackHostHeader('192.168.1.5:3080'), 'H1: LAN host rejected (loopback-only deployment)')
 
 // A4. 对外错误脱敏
 const scrubbed = H.routeError(new Error('failed https://api.secret.example/v1/x at C:\\Users\\me\\.dsh\\settings.yaml'))
@@ -473,11 +483,12 @@ assert(H.extractSvgMarkup('<svg xmlns="http://www.w3.org/2000/svg" width="10" he
 assert(H.extractSvgMarkup('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" onload="x()"><rect/></svg>') === '', 'svg with on*= rejected')
 assert(H.extractSvgMarkup('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect fill="red"/></svg>').startsWith('<svg'), 'clean svg accepted')
 
-// A23. 跨端口凭据重定向必须视为跨源
+// A23. 跨端口凭据/自定义头重定向必须视为跨源（L3：非默认头一律敏感）
 function shouldBlockCredentialRedirect(fromUrl, toUrl, headers) {
-  return H.hasSensitiveRequestHeaders(headers) && !H.sameUrlOrigin(fromUrl, toUrl)
+  return H.hasCrossOriginUnsafeHeaders(headers) && !H.sameUrlOrigin(fromUrl, toUrl)
 }
 assert(shouldBlockCredentialRedirect('http://127.0.0.1:3001/models', 'http://127.0.0.1:3002/models', { authorization: 'Bearer sk-secret-demo' }), 'cross-port credential redirect blocked')
+assert(shouldBlockCredentialRedirect('https://gw.example.com/v1', 'https://evil.example.com/x', { 'X-Gateway-Key': 'secret' }), 'L3: cross-origin redirect with a custom gateway header is blocked')
 assert(!shouldBlockCredentialRedirect('http://127.0.0.1:3001/models', 'http://127.0.0.1:3001/next', { authorization: 'Bearer sk' }), 'same-origin credential redirect allowed')
 
 /* ─────────── B. 源码标记回归 ─────────── */
@@ -542,7 +553,7 @@ assert(src.includes("PREF_KEY = '__modelSuite'"), 'pref key is __modelSuite')
 assert(src.includes("LEGACY_PREF_KEY = '__modelPlus'"), 'legacy pref key migration present')
 assert(src.includes('migratedFromModelPlus'), 'migration marker present')
 // 出站策略
-assert(src.includes('携带凭据的请求禁止跨域重定向'), 'credential redirect guard present')
+assert(src.includes('携带请求头（凭据/自定义头）的请求禁止跨域重定向'), 'L3: cross-origin redirects reject ALL non-default headers (custom gateway headers included)')
 assert(src.includes('unauthenticated write denied'), 'write trust fence present')
 assert(src.includes('assertTrustedWriteRequest'), 'trust fence wiring present')
 assert(src.includes('expectedRevision'), 'CAS expectedRevision used')
@@ -577,6 +588,38 @@ assert(lruMatch && Number(lruMatch[1]) <= 3, 'O1: catalog LRU keeps at most 3 fu
 // O6/O8：客户端 fetch 超时 + 数字输入校验
 assert(client.includes('AbortSignal.timeout'), 'O6: the client fetch has a timeout')
 assert(client.includes('.test(cvRaw)') && client.includes('.test(mvRaw)'), 'O8: numeric editor inputs are validated client-side')
+
+// ── 第三轮审查修复的回归标记 ──
+// H1：全路由（读+写）Host 栅栏——防 DNS rebinding 绕过 Origin≈Host 一致性检查
+assert(src.includes('function isLoopbackHostHeader'), 'H1: the loopback Host gate helper exists')
+assert((src.match(/isLoopbackHostHeader\(req && req\.headers/g) || []).length >= 2, 'H1: both GET and POST route families check the Host header')
+assert(src.includes("'untrusted host header'"), 'H1: a non-loopback Host is rejected with 403')
+assert(src.includes('unauthenticated write denied'), 'H1 keeps the Origin/loopback write fence on top of the Host gate')
+// M1：compat 透传合并按**当前协议** offer 判定（跨协议手写字段不得被抹）
+assert(src.includes('const offer = COMPAT_OFFER[api]'), 'M1: the compat carry-over merge classifies by the CURRENT protocol offer')
+assert(src.includes('按**当前协议**的 offer 表判定'), 'M1: the rationale comment is anchored')
+// M4：add/enrich/delete 的 modelView 复用一次 readAuto（不再逐模型 settings.get）
+assert((src.match(/modelView\(m, autoCfg\)/g) || []).length >= 3, 'M4: add/enrich/delete pass the once-read autoCfg into modelView')
+// L1：testModel 按 thinkingFormat 逐格式编码 + 如实报告 effortApplied
+assert(src.includes("thinkingFormat === 'qwen'") && src.includes("thinkingFormat === 'zai'") && src.includes("thinkingFormat === 'together'"), 'L1: the test request encodes qwen/zai/together thinking formats')
+assert(src.includes('effortApplied'), 'L1: the test result reports whether the effort param was actually injected')
+// L2：discover-models 的空串 api 视为未提供，回落渠道真实协议
+assert(src.includes('const apiArg = str(args && args.api, \'\').trim()'), 'L2: an empty-string api no longer overrides the provider protocol')
+// L5：局部变量不再遮蔽模块级 apply 导出
+assert(src.includes('const applyNow ='), 'L5: enrichProviderModels no longer shadows the exported apply()')
+assert(!/const apply = args/.test(src), 'L5: the shadowing declaration is gone')
+// L6：超范围数字（Infinity）双侧拦截，不再静默保留旧值
+assert(src.includes('!Number.isFinite(editor.contextWindow)'), 'L6: the host rejects non-finite editor numbers')
+assert(client.includes('Number.isFinite(Number(cvRaw))'), 'L6: the client rejects digit strings that overflow Number range')
+// M2/M3（客户端）：切渠道重置手动添加面板；全局草稿不再被切渠道重置
+assert(/switchProvider[\s\S]{0,900}resetAddForm\(\)/.test(client), 'M2: switchProvider resets the manual-add panel state')
+assert(!/fillAdvancedFromProvider = \(b, prov\) => \{[\s\S]{0,400}fillSourcesDraft/.test(client), 'M3: fillAdvancedFromProvider no longer resets the global sources/auto drafts')
+assert(/reload[\s\S]{0,2000}fillSourcesDraft\(b\)/.test(client), 'M3: the global drafts are still filled once on mount')
+// L4（客户端）：8KB 按 UTF-8 字节口径；保留头名单与 host 对齐
+assert(client.includes('utf8Bytes'), 'L4: the client header limit counts UTF-8 bytes like the host')
+assert(!/serialized\.length > HEADER_TOTAL_MAX/.test(client), 'L4: the old UTF-16 code-unit check is gone')
+// L1（客户端）：effort 未真正注入时不显示「已用 X」
+assert(client.includes('tr.effortApplied !== false'), 'L1: the client no longer claims an effort was used when it was not injected')
 
 // cordis.patch.yml
 assert(patch.includes('- insert:'), 'patch has an insert row')

@@ -158,7 +158,7 @@ globalThis.window = {
 const BOOTSTRAP = {
   ok: true,
   writable: true,
-  version: '0.1.0',
+  version: '0.1.1',
   levels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   presets: [{ id: 'basic', label: '通用三档' }],
   protocols: ['openai-completions', 'openai-responses', 'anthropic-messages'],
@@ -238,7 +238,7 @@ globalThis.fetch = async (path, init) => {
   if (url.indexOf('/bootstrap') >= 0) return jsonResponse(BOOTSTRAP)
   if (url.indexOf('/list-models') >= 0) return jsonResponse(LIST_MODELS)
   if (url.indexOf('/save-model') >= 0) return jsonResponse({ ok: true, provider: 'hub-gm', model: LIST_MODELS.models[0], via: 'update', providers: BOOTSTRAP.providers, message: '已保存 glm-5.3（via update）' })
-  if (url.indexOf('/check-update') >= 0) return jsonResponse({ ok: true, localVersion: '0.1.0', latestVersion: '0.1.0', hasUpdate: false, npmUrl: 'https://www.npmjs.com/package/dsh-model-suite' })
+  if (url.indexOf('/check-update') >= 0) return jsonResponse({ ok: true, localVersion: '0.1.1', latestVersion: '0.1.1', hasUpdate: false, npmUrl: 'https://www.npmjs.com/package/dsh-model-suite' })
   return jsonResponse({ ok: true, message: 'stub', providers: BOOTSTRAP.providers })
 }
 

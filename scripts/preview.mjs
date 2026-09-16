@@ -146,7 +146,7 @@ const COMPAT_FIELDS_OC = [
 ]
 
 const BOOTSTRAP = {
-  ok: true, writable: true, version: '0.1.0',
+  ok: true, writable: true, version: '0.1.1',
   levels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   presets: [{ id: 'basic', label: '通用三档' }, { id: 'all', label: '全开' }, { id: 'none', label: '关闭推理' }],
   protocols: ['openai-completions', 'openai-responses', 'anthropic-messages'],

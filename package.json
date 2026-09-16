@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-suite",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH Web 插件：模型套件 —— 逐模型编辑思考强度/视觉/上下文/兼容开关，三源目录一键同步，并自动补齐自定义渠道的模型参数。",
   "type": "module",
   "main": "lib/index.js",

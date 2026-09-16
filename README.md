@@ -132,10 +132,11 @@ curl -fsSL https://models.dev/api.json -o api.json
 
 ## 7. Security model
 
+- **Host header fence (every endpoint, read + write)**: `Host` must be a loopback literal (`localhost` / `127.0.0.0/8` / `::1`), otherwise `403 untrusted host header`. This blocks DNS rebinding — the platform webServer never validates Host, and under rebinding `Origin` and `Host` are both the attacker's domain (the Origin≈Host check passes), while `GET /bootstrap` and `GET /list-models` return baseURLs and custom-header plaintext with no other check. **Deployment constraint: the plugin's endpoints are loopback-only** (the DSH web default bind `127.0.0.1` satisfies this; `0.0.0.0` LAN access is not supported).
 - **Write trust fence**: a request with `Origin` must be same-origin with `Host` (scheme + hostname + port compared component-wise, never by suffix); without `Origin` only loopback peers are accepted, otherwise `403 unauthenticated write denied`.
 - **Outbound policy**: http/https only; rejects embedded credentials, cloud-metadata/link-local hosts, and cleartext HTTP to non-loopback; catalog fetches require HTTPS.
-- **Redirects**: at most 5 hops, absolute per-chain deadline, no cross-origin redirect with credentials, no HTTPS→HTTP downgrade.
-- **Input validation**: model id / display name length and charset whitelists; header names must match the RFC 7230 token grammar, values must not contain newlines, total ≤ 8 KB; compat accepts only fields whose gate is `offer` for the current protocol with a matching value type (unsupported ⇒ `400`, never silently dropped).
+- **Redirects**: at most 5 hops, absolute per-chain deadline, no cross-origin redirect carrying **any non-default header** (credentials or custom gateway headers alike), no HTTPS→HTTP downgrade.
+- **Input validation**: model id / display name length and charset whitelists; header names must match the RFC 7230 token grammar, values must not contain newlines, total ≤ 8 KB (UTF-8 byte semantics on both sides); compat accepts only fields whose gate is `offer` for the current protocol with a matching value type (unsupported ⇒ `400`, never silently dropped).
 - **Output scrubbing**: credentials in diagnostics → `[redacted]`, `sk-*` → `[redacted-key]`; URLs in public errors → `[remote-url]`, paths → `[path]`, truncated to 512; SVG rejects `<script` / `on*=` / `javascript:`.
 - ⚠️ This is not full session authentication: any local process can still POST without `Origin` (a deliberate trade-off, same as `dsh-model-plus`).
 
@@ -160,7 +161,7 @@ curl -fsSL https://models.dev/api.json -o api.json
 | POST | `/test-model` | one real model API call |
 | GET | `/check-update` | latest npm version |
 
-Status codes: `400` validation · `403` trust fence · `404` unknown route/model · `405` method · `409` CAS conflict (**terminal, never auto-retried**) · `500` internal (scrubbed).
+Status codes: `400` validation · `403` fence rejection (Host fence / write fence) · `404` unknown route/model · `405` method · `409` CAS conflict (**terminal, never auto-retried**) · `500` internal (scrubbed).
 
 ---
 
@@ -209,6 +210,17 @@ A second full review produced 7 high, 7 medium and 8 low-priority fixes, each co
 6. **B7** — the add-panel「获取模型」probe reuses the provider's stored baseURL/credentials/custom headers (it always sent an empty key before and 401'd on protected gateways).
 7. Medium: case-variant duplicate header names rejected (M1); slow-failure cooldown so an offline catalog cannot stall every resolution 3 s — a stale snapshot is served during the cooldown (M2); oversized bodies drained instead of socket-destroyed so the 400 is deliverable (M3); no hardcoded temperature in the test request — o1-style endpoints 400 on it (M4); semver compare so downgrades are not "updates" (M5); EN message patterns realigned with the actual host messages (M6); `cache-control: no-store` on API responses (M7).
 8. Low: catalog LRU 6→3 full parsed snapshots (O1); hot-path settings reads hoisted (O2); redundant client re-fill removed (O3); proxy parsed with `new URL` + protocol-default port (O4); `build.mjs` compares the exported `VERSION` with package.json instead of hardcoding (O5); client fetch timeout 120 s / 11 min for tests (O6); dead `npmUrl` branch removed (O7); numeric editor inputs validated client-side (O8).
+
+### 9.3 Third review round (high → medium → low)
+
+A third full pass over the post-fix code (including the platform `dsh-host-webserver` source) produced 1 high, 4 medium and 6 low-priority fixes:
+
+1. **H1 (high) — DNS-rebinding bypass closed**: the write fence only proved `Origin ≈ Host`, which a rebinding page satisfies with both headers under its own domain (and the no-Origin branch sees a loopback remote — the victim's own browser). Worse, `GET /bootstrap` / `GET /list-models` had **no** trust check at all while returning baseURLs and custom-header plaintext. Every `/api/suite/*` route (GET and POST) now requires a loopback `Host` literal or answers `403 untrusted host header`. Documented constraint: loopback-only deployment.
+2. **M1 — cross-protocol compat fields survive edits**: the B6 carry-over classified "known" fields with the union of *all* protocols' tables, so a hand-written cross-protocol compat field (e.g. `supportsTemperature` on an openai-completions model) was silently dropped by any unrelated edit; classification now uses the **current protocol's** offer table.
+3. **M2 — switching providers resets the manual-add panel** (`resetAddForm()`), which used to keep the previous provider's discovery candidates pre-checked and could add them to the wrong provider.
+4. **M3 — switching providers no longer wipes unsaved edits** in the global catalog-sources / auto-config cards (they are provider-independent and are now filled only on mount).
+5. **M4 — O2 completed**: `add-models` / `enrich-models` / `delete-model` responses build model views with one shared `readAuto()` instead of one settings resolve per model.
+6. Low: **L1** the test request now encodes the effort per pi-ai's `thinkingFormat` wire table (qwen→`enable_thinking`, zai/together/deepseek/string-thinking/qwen-chat-template each mapped, chat-template/baseten skipped) and reports `effortApplied`, so the UI no longer claims an effort was "used" when it was not injected; **L2** an empty-string `api` no longer overrides the provider's real protocol in `discover-models`; **L3** cross-origin redirects reject every non-default header (custom gateway headers included, not just reserved names); **L4** the client header-size check counts UTF-8 bytes like the host and the reserved-name lists are aligned; **L5** `delete-model` reports "missing provider" correctly and the local `applyNow` no longer shadows the exported `apply()`; **L6** digit strings overflowing Number range (`Infinity`) are rejected client-side and host-side instead of silently keeping the old value.
 
 Upgrade checkpoints after a DSH bump:
 
