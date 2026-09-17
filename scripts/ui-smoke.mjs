@@ -158,7 +158,7 @@ globalThis.window = {
 const BOOTSTRAP = {
   ok: true,
   writable: true,
-  version: '0.1.1',
+  version: '0.2.0',
   levels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   presets: [{ id: 'basic', label: '通用三档' }],
   protocols: ['openai-completions', 'openai-responses', 'anthropic-messages'],
@@ -166,7 +166,9 @@ const BOOTSTRAP = {
   compatFields: {
     'openai-completions': [
       { field: 'supportsStore', type: 'boolean', label: '允许 store', description: '端点是否接受 store 参数（OpenAI 的响应持久化开关）' },
-      { field: 'maxTokensField', type: 'enum', label: '输出上限字段', description: '输出上限使用的字段拼写', values: ['max_completion_tokens', 'max_tokens'] },
+      // ★ R-F5：host 经 compatFieldMetadata 下发的枚举键是 **options**（不是 values）——
+      //   桩与真实契约对齐，无头渲染才会真的喂到枚举下拉。
+      { field: 'maxTokensField', type: 'enum', label: '输出上限字段', description: '输出上限使用的字段拼写', options: ['max_completion_tokens', 'max_tokens'] },
     ],
   },
   compatFieldCounts: { 'openai-completions': 19 },
@@ -185,16 +187,20 @@ const BOOTSTRAP = {
   defaultTestPrompt: 'ping',
   defaultTestMaxTokens: 16384,
   note: '',
-  repo: 'https://github.com/kingsunb/dsh-model-suite',
-  homepage: 'https://github.com/kingsunb/dsh-model-suite#readme',
-  issues: 'https://github.com/kingsunb/dsh-model-suite/issues',
+  repo: 'https://github.com/pyooyq/dsh-model-suite',
+  homepage: 'https://github.com/pyooyq/dsh-model-suite#readme',
+  issues: 'https://github.com/pyooyq/dsh-model-suite/issues',
   providers: [
     {
-      provider: 'hub-gm', api: 'openai-completions', baseURL: 'https://hub.example.com/v1',
-      modelCount: 2, visionCount: 1, withEffort: 1, retryLabel: '5', retryPolicy: null,
-      retryMode: 'normal', retryMaxRetries: null, headersCount: 0,
-      defaults: {}, defaultsConfigured: {}, compat: {}, compatCount: 0,
-      apiKeyEnv: '', isCatalogRoute: false, headers: {},
+      // ★ R-F5：与 host listProviders() 实际形状对齐（visionCount/compatCount 是
+      //   幽灵键，真实键为 withVision/withCompat；补齐 displayName/retryConfigured/
+      //   retryEffectiveMaxRetries/offeredCompatFields）
+      provider: 'hub-gm', displayName: 'hub-gm', api: 'openai-completions', baseURL: 'https://hub.example.com/v1',
+      modelCount: 2, withVision: 1, withEffort: 1, withCompat: 0, retryLabel: '5', retryPolicy: null,
+      retryMode: 'normal', retryMaxRetries: null, retryConfigured: false, retryEffectiveMaxRetries: 5,
+      headersCount: 0, offeredCompatFields: ['supportsStore', 'supportsDeveloperRole'],
+      defaults: {}, defaultsConfigured: {},
+      apiKeyEnv: '', isCatalogRoute: false, headers: {}, compat: {},
     },
   ],
 }
@@ -238,8 +244,10 @@ globalThis.fetch = async (path, init) => {
   if (url.indexOf('/bootstrap') >= 0) return jsonResponse(BOOTSTRAP)
   if (url.indexOf('/list-models') >= 0) return jsonResponse(LIST_MODELS)
   if (url.indexOf('/save-model') >= 0) return jsonResponse({ ok: true, provider: 'hub-gm', model: LIST_MODELS.models[0], via: 'update', providers: BOOTSTRAP.providers, message: '已保存 glm-5.3（via update）' })
-  if (url.indexOf('/check-update') >= 0) return jsonResponse({ ok: true, localVersion: '0.1.1', latestVersion: '0.1.1', hasUpdate: false, npmUrl: 'https://www.npmjs.com/package/dsh-model-suite' })
-  return jsonResponse({ ok: true, message: 'stub', providers: BOOTSTRAP.providers })
+  if (url.indexOf('/check-update') >= 0) return jsonResponse({ ok: true, localVersion: '0.2.0', latestVersion: '0.2.0', hasUpdate: false, npmUrl: 'https://www.npmjs.com/package/dsh-model-suite' })
+  // ★ R-优化：未知端点不再兜底 200——客户端新增未契约的端点调用时立即暴露
+  requests[requests.length - 1].unknown = true
+  return jsonResponse({ ok: false, error: 'ui-smoke: unknown endpoint ' + url }, 500)
 }
 
 /* ─────────── 加载 bundle 并挂载 ─────────── */
@@ -357,7 +365,7 @@ await view.flush()
 const advText = textOf(view.tree)
 check(advText.indexOf('Allow store') >= 0, 'the host-supplied compat label is translated (Allow store)')
 check(advText.indexOf('允许 store') < 0, 'the Chinese compat label is gone in EN mode')
-check(advText.indexOf('compat field table') >= 0 || true, 'compat card rendered')
+check(advText.indexOf('compat field table') >= 0 || advText.indexOf('Allow store') >= 0 || advText.indexOf('max_completion_tokens') >= 0, 'compat card rendered')
 
 /* ─────────── 收尾 ─────────── */
 

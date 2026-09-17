@@ -215,10 +215,53 @@ A third full pass over the post-fix code (including the platform `dsh-host-webse
 5. **M4 — O2 completed**: `add-models` / `enrich-models` / `delete-model` responses build model views with one shared `readAuto()` instead of one settings resolve per model.
 6. Low: **L1** the test request now encodes the effort per pi-ai's `thinkingFormat` wire table (qwen→`enable_thinking`, zai/together/deepseek/string-thinking/qwen-chat-template each mapped, chat-template/baseten skipped) and reports `effortApplied`, so the UI no longer claims an effort was "used" when it was not injected; **L2** an empty-string `api` no longer overrides the provider's real protocol in `discover-models`; **L3** cross-origin redirects reject every non-default header (custom gateway headers included, not just reserved names); **L4** the client header-size check counts UTF-8 bytes like the host and the reserved-name lists are aligned; **L5** `delete-model` reports "missing provider" correctly and the local `applyNow` no longer shadows the exported `apply()`; **L6** digit strings overflowing Number range (`Infinity`) are rejected client-side and host-side instead of silently keeping the old value.
 
+### 9.4 Fourth round: the off-level wire value
+
+User report: "setting the thinking level to off doesn't seem to actually change the config."
+
+1. **F1 (medium) — the off wire value is no longer discarded**: `normalizeEditor` hardcoded `efforts.off = null`, silently throwing away any value typed for off in the wire editor (it reverted to "send empty" after the next save+reload) — yet pi-ai explicitly supports `off` with a value ("off with a value sends that value"), which is the only way a **think-by-default gateway** (GPT-5.x / GLM: selecting off merely omits the parameter, so the model keeps thinking) can express an explicit off. The read path (`sanitizeEfforts`) already preserved such values, so a hand-edited `settings.yaml` worked until one plugin save reset it. The off branch now reads `row.wire`: empty / "send empty" → `null` (omit); non-empty → persisted verbatim (≤64 chars; longer is rejected with 400). Unchecking "send empty" in the UI now defaults the wire to `none` (the OpenAI-style explicit-off spelling), the hint explains both semantics, and integration-smoke covers the round-trip and the length cap.
+
+Platform semantics worth knowing while troubleshooting (not a plugin defect): `off: null` means "omit the effort parameter when off is selected" — byte-for-byte the same request as naming no effort — and `reasoningEfforts: false` merely removes the thinking menu; neither puts a disabling parameter on the wire. To actually send one, give off a wire value (this fix) or use compat switches (`thinkingFormat` & co).
+
 Upgrade checkpoints after a DSH bump:
 
 1. `lib/catalog-routes.js` — the 40 built-in route ids (`apply()` best-effort replaces them with the live list when pi-ai is resolvable).
 2. `lib/compat-fields.js` — the compat field table (mirror the four gates in `dsh-llm-pi-ai/lib/types/catalog.d.ts`); `build.mjs` asserts 19/4/7/1.
+
+### 9.5 Fifth round: full code-review pass (0.1.3 → 0.2.0)
+
+A line-by-line review (2 high / 11 medium / 24 low / 14 optimizations) — every finding is fixed or explicitly waived this round. Source comments carry matching `★ R-*` markers.
+
+**High**
+
+1. **H1 — in-flight provider switch race in `loadDetail`**: a refresh/enrich-triggered load landing after the user switched providers (the dropdown only respects `busy`) overwrote the new provider's model table; subsequent saves/deletes would target the wrong provider. Now guarded by a provider epoch: responses from a stale epoch are dropped wholesale.
+2. **H2 — same race in the discover panel**: in-flight "fetch models" results pierced `resetAddForm()` and landed (pre-ticked, "add all") in the new provider's add panel, writing old-provider models on submit. Same epoch guard.
+
+**Medium**
+
+1. **M1** — `enrichModels` preview used a bare `apply` variable that shadowed the module-level export and was always truthy, so preview responses claimed "written back from catalog"; renamed `applyNow` and the preview/apply messages are now distinct (asserted in integration-smoke).
+2. **M2** — chain 3 could not tell "not configured" from "explicitly off" (`reasoningEfforts === false`): it injected catalog levels into reasoning-off models, whose dispatch then fails with UNSUPPORTED_REASONING_EFFORT. Explicit false now skips injection (asserted).
+3. **M3** — `__proto__`-style header names arriving as own keys (the `JSON.parse` vector) were silently swallowed by object spread, faking a "clear headers" payload; the host now rejects them with 400 and the client validates locally (security-smoke asserts the JSON.parse vector).
+4. **M4** — tag-variant ids (`name@v1` vs `name@v2`) were tag-stripped into one matching bucket, handing different generations wrong parameters; a `byRaw` exact-match level now resolves variants first (asserted).
+5. **M5** — `loadDetail` replaced the whole editor table, dropping unsaved drafts on other model rows; editors now carry a `dirty` flag and survive reloads (`forceFresh` for wholesale server refreshes; a successful save clears only its own row).
+6. **M6** — clearing a source URL while `enabled: true` let a later enabled write resurrect "enabled + stale URL" on the host, and the client only coerced modelsDev; both sides now treat an empty URL as disabled.
+7. **M7** — model tests (up to 11 minutes, not holding `busy`) wrote results into whichever provider was current when they finished, mis-attributing same-id models across providers; batch testing now aborts on provider switch. Epoch-guarded.
+8. **M8** — peer ranges `^0.1.0-rc.6` sit below the actually required 0.1.5-rc.2 surface; aligned, with `dsh-llm-pi-ai` declared as an optional peer (pure enhancement layer). The phantom `dsh-client-runtime` entry was removed from `dsh.client.inject`.
+9. **M9** — integration-smoke hardcoded `C:/Users/yooy/...` for the real Config schema and failed outright elsewhere; now resolves dynamically (env `DSH_PI_AI_PATH` → createRequire candidates → legacy fallback) and degrades to a warning when unresolvable, so `verify` runs on any machine.
+10. **M10** — catalog-route calibration trusted a static provider list; it now prefers the live `builtinProviders()` ids with the static list as fallback.
+11. **M11** — catalog-source URLs (including unsaved drafts) went straight into `<a href>` on the About tab; non-`http(s)` schemes now degrade to plain text.
+
+**Low / hardening (selected)**
+
+- **F4** an always-true `|| true` ui-smoke assertion replaced with a real one (enum option text renders); **F5** stub shapes realigned with the real contract (`options` not `values`, real provider-row fields, pyooyq repo links, preview output `.preview.html` inside the package); **F6** `add-models` rejects illegal `reasoningEfforts` (off-only map, non-object) with 400 instead of silently dropping the key; **F7** saving source config now also clears the catalog-failure backoff.
+- **Security**: numeric-encoding IPv4 (`0x7f.1`, `0x7f000001`, single-number forms) and trailing-dot FQDNs can no longer bypass loopback/metadata checks (`expandCompactIpv4`, inet_aton semantics); SVG extraction decodes entities before scanning and caps at 200 KB (both halves); secret-redaction covers `api-key` spellings, fullwidth colons, and vendor prefixes (`sk-`, `xai-`, `gsk_`, `AIza`, `r8_`, `tgrk_`); provider-name scoring uses boundary matching instead of substring.
+- **Client**: the close button no longer reuses the effort-level dictionary entry (English showed "off"); zombie dictionary entries removed; bare `）` literals wrapped in `t()`; the settings-section label re-registers on locale change (per the platform contract); provider snapshots no longer refill a different provider's card drafts after an in-flight switch.
+- **Test request fidelity**: the effort wire table covers every pi-ai `thinkingLevelMap` format; off-with-wire actually sends its value; `effortApplied` reports honestly; a client-side abort (panel closed) cancels the in-flight request via `res.on('close')`; the https proxy tunnel uses the https module.
+- **Purity guard**: security-smoke statically asserts the pure helper section contains no `setTimeout` / `process.*` / `fetch`.
+
+**Optimizations (selected)**: `checkUpdate` caches results for 10 minutes (failures uncached); `describe()` micro-cached 150 ms with precise invalidation on every successful write; litellm/openrouter catalogs fetched in parallel; `metadataFingerprint` memoized; `looseId` derived without double normalization; `listModels`+`bootstrap` run concurrently after saves/deletes/adds/enrich (halves the round-trips); `build.mjs` normalizes the inject shape before the includes check; the ui-smoke stub returns 500 for unknown endpoints so uncontracted client calls surface immediately.
+
+**Explicitly waived** (risk outweighs the benefit): `listProviders()` still rides every write response (a response-contract change touching many client consumers to save one GET); React row-level memo / `parseAddModels` memoization (measurable only at 100+ models, risky against the headless-render stub); the `uiLang` module variable set during render (no concurrency surface on a single settings page; re-registration covers label refresh).
 
 ---
 

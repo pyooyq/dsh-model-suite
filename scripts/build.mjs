@@ -94,9 +94,11 @@ try {
   // 禁止 { required, optional }——会被当成服务名，插件永远 pending。
   const inj = mod.inject
   let injLabel = ''
+  let injList = []
   if (Array.isArray(inj) && inj.length > 0) {
     if (!inj.every((n) => typeof n === 'string' && n)) fail('lib/index.js inject array entries must be non-empty strings')
     injLabel = inj.join(', ')
+    injList = inj
   } else if (inj && typeof inj === 'object' && !Array.isArray(inj)) {
     const keys = Object.keys(inj)
     if (!keys.length) fail('lib/index.js inject object must have at least one service name')
@@ -104,11 +106,14 @@ try {
       fail('lib/index.js inject must NOT use { required, optional }; cordis treats those keys as service names. Use string[] (required deps) and ctx.get() for optional services')
     }
     injLabel = keys.join(', ')
+    injList = keys
   } else {
     fail('lib/index.js must export inject as non-empty string[] or { serviceName: config }')
   }
+  // ★ R-优化：injList 先归一化——对象形态下旧代码直接 inj.includes 会抛
+  //   TypeError，被外层 try 收编成误导性的 load/shape 错误。
   for (const dep of ['settings', 'webServer', 'timer', 'llm']) {
-    if (!inj.includes(dep)) fail(`lib/index.js inject must include "${dep}" (三链路需要 llm)`)
+    if (!injList.includes(dep)) fail(`lib/index.js inject must include "${dep}" (三链路需要 llm)`)
   }
   ok(`host half ok: name=${mod.name} inject=${injLabel}`)
 } catch (e) {

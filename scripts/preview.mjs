@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const outPath = process.argv[2] || join(root, '..', 'dsh-model-suite-preview.html')
+const outPath = process.argv[2] || join(root, '.preview.html')
 
 /* ─────────── 极小 React 替身（与 ui-smoke 同款） ─────────── */
 
@@ -137,16 +137,16 @@ const COMPAT_FIELDS_OC = [
   { field: 'supportsStore', type: 'boolean', label: '允许 store', description: '端点是否接受 store 参数（OpenAI 的响应持久化开关）' },
   { field: 'supportsDeveloperRole', type: 'boolean', label: '允许 developer 角色', description: '端点是否接受 developer 角色的系统提示（仅推理模型发送）；false 退回 system' },
   { field: 'supportsReasoningEffort', type: 'boolean', label: '允许 reasoning_effort', description: '端点是否接受 reasoning_effort 请求字段' },
-  { field: 'maxTokensField', type: 'enum', label: '输出上限字段', description: '输出上限使用的字段拼写', values: ['max_completion_tokens', 'max_tokens'] },
-  { field: 'thinkingFormat', type: 'enum', label: '思考参数格式', description: '推理参数的 wire 格式', values: ['openai', 'deepseek', 'openrouter', 'together'] },
+  { field: 'maxTokensField', type: 'enum', label: '输出上限字段', description: '输出上限使用的字段拼写', options: ['max_completion_tokens', 'max_tokens'] },
+  { field: 'thinkingFormat', type: 'enum', label: '思考参数格式', description: '推理参数的 wire 格式', options: ['openai', 'deepseek', 'openrouter', 'together'] },
   { field: 'requiresToolResultName', type: 'boolean', label: '工具结果需带 name', description: '工具结果消息是否必须带 name' },
   { field: 'supportsUsageInStreaming', type: 'boolean', label: '流式返回 usage', description: '是否接受 stream_options: { include_usage: true }' },
-  { field: 'cacheControlFormat', type: 'enum', label: '提示缓存格式', description: '提示缓存标记约定', values: ['anthropic'] },
+  { field: 'cacheControlFormat', type: 'enum', label: '提示缓存格式', description: '提示缓存标记约定', options: ['anthropic'] },
   { field: 'vllmPriority', type: 'number', label: 'vLLM 优先级', description: 'vLLM 调度 priority（越小越早；服务端需开启优先级调度）' },
 ]
 
 const BOOTSTRAP = {
-  ok: true, writable: true, version: '0.1.1',
+  ok: true, writable: true, version: '0.2.0',
   levels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   presets: [{ id: 'basic', label: '通用三档' }, { id: 'all', label: '全开' }, { id: 'none', label: '关闭推理' }],
   protocols: ['openai-completions', 'openai-responses', 'anthropic-messages'],
@@ -163,17 +163,17 @@ const BOOTSTRAP = {
   defaults: { contextWindow: 262144, maxTokens: 32768, input: ['text'], providerMaxRetries: 5 },
   canStoreApiKey: false, migratedFromModelPlus: false,
   defaultTestPrompt: '我要去洗车，洗车店离家63米我是开车去还是走路去。', defaultTestMaxTokens: 16384, note: '',
-  repo: 'https://github.com/kingsunb/dsh-model-suite',
-  homepage: 'https://github.com/kingsunb/dsh-model-suite#readme',
-  issues: 'https://github.com/kingsunb/dsh-model-suite/issues',
+  repo: 'https://github.com/pyooyq/dsh-model-suite',
+  homepage: 'https://github.com/pyooyq/dsh-model-suite#readme',
+  issues: 'https://github.com/pyooyq/dsh-model-suite/issues',
   providers: [
     {
       provider: 'hub-gm', api: 'openai-completions', baseURL: 'https://hub.example.com/v1',
       displayName: '示例网关 hub-gm',
-      modelCount: 2, visionCount: 1, withEffort: 1, retryLabel: '默认 5 次', retryPolicy: null,
+      modelCount: 2, withVision: 1, withEffort: 1, withCompat: 2, retryConfigured: false, retryEffectiveMaxRetries: 5, offeredCompatFields: ['supportsStore'], retryLabel: '默认 5 次', retryPolicy: null,
       retryMode: 'normal', retryMaxRetries: null, headersCount: 2,
       defaults: {}, defaultsConfigured: {},
-      compat: { supportsDeveloperRole: false, thinkingFormat: 'deepseek' }, compatCount: 2,
+      compat: { supportsDeveloperRole: false, thinkingFormat: 'deepseek' },
       apiKeyEnv: '', isCatalogRoute: false,
       headers: { 'X-Title': 'model-suite-preview', 'X-Api-Base': 'https://hub.example.com' },
     },

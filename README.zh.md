@@ -268,6 +268,16 @@ v0.1.0 在交付后做了一遍全量代码复审，以下为**行为相关**的
 | L5 | 低 | `deleteModel` / `enrichProviderModels` | 缺 provider 时报「渠道不存在」（应为「缺少 provider」）；局部 `const apply` 遮蔽模块级导出的 `apply(ctx)` | 文案修正；改名 `applyNow` |
 | L6 | 低 | client `saveModel` / host `normalizeEditor` | 超长数字串（>1e308）解析成 `Infinity`，host 按"未填"静默处理 → 旧值原样保留，用户以为改成功了 | 客户端 `Number.isFinite` 就地报错；host 对非有限数字直接 400 |
 
+### 9.4 第四轮修正：off 档 wire 值
+
+用户报告"设置思考等级为 off 时感觉没真正改配置"。核查 + 修正：
+
+| # | 级别 | 位置 | 问题 | 修正 |
+| :-- | :-- | :-- | :-- | :-- |
+| F1 | 中 | `normalizeEditor` off 分支 / client wire 编辑器 | 硬编码 `efforts.off = null`，把 wire 高级编辑里给 off 填的值**静默丢弃**（保存重载后变回「空传」）——而 pi-ai 明确支持 `off` 带 wire 值（"off with a value sends that value"），这是**默认开思考的网关**（GPT-5.x / GLM 等：选 off 只是不发参数、模型照样思考）表达"显式关闭"的唯一通道；读路径 `sanitizeEfforts` 本就保留该值，手改 settings.yaml 能生效、插件保存一次即被重置。客户端取消「空传」时的默认 wire 还是字面量 `'off'`（OpenAI 系网关要的是 `none`） | off 分支读取 `row.wire`：空串/「空传」→ `null`（选 off 时不发送）；非空 → 原值落盘（≤64 字符，超长 400）。客户端默认 wire 改为 `'none'`，提示文案说明两种语义；integration-smoke 补 off wire 值往返 / 超长拒绝断言 |
+
+平台语义边界（非插件缺陷，排查时需知）：`off: null` = "选 off 时**不发送**强度参数"，请求体与未配置任何档位**逐字节相同**（pi-ai 注释原话 "byte-for-byte the same request as naming no effort"）；`reasoningEfforts: false`（关闭推理）也只是移除思考菜单、请求同样不带关闭参数。要让请求真正带上"关闭思考"参数，必须给 off 配 wire 值（本修复）或使用 compat 开关（`thinkingFormat` 等）。
+
 DSH 升级后的维护点：
 
 1. `lib/catalog-routes.js` 的内置 route 名单（40 个）；`apply()` 会 best-effort 用实测名单覆盖，取不到就沿用静态名单。
@@ -277,6 +287,47 @@ DSH 升级后的维护点：
 ```sh
 node -e "import('@earendil-works/pi-ai/providers/all').then(m=>console.log(JSON.stringify(m.builtinProviders().map(p=>p.id))))"
 ```
+
+### 9.5 第五轮修正：全量代码审查（0.1.3 → 0.2.0）
+
+对插件做了逐行代码审查（高 2 / 中 11 / 低 24 / 优化 14 项），本轮全部修复或显式豁免。标记 `★ R-*` 已同步落在源码注释里。
+
+| # | 级别 | 位置 | 问题 | 修正 |
+| :-- | :-- | :-- | :-- | :-- |
+| H1 | 高 | client `loadDetail` | 渠道切换在途竞速：refresh/enrich 写回触发的 `loadDetail` 响应落地时用户已切渠道（下拉只看 busy），旧渠道模型表覆盖新渠道界面 → 后续保存/删除打到错误渠道 | 纪元守卫：进入时记 `providerEpochRef`，落地前不一致整份丢弃 |
+| H2 | 高 | client `runDiscoverModels` | 「获取模型」在途切渠道，旧候选穿透 `resetAddForm()` 进新渠道的添加面板（默认全勾选）→ 一键新增写入旧渠道模型 | 同上纪元守卫：候选/勾选/错误全部按纪元丢弃 |
+| M1 | 中 | host `enrichModels` 预览分支 | 裸 `apply` 恒真（遮蔽模块级导出函数），预览 message 谎报「已从目录写回」 | 改名 `applyNow`；预览/写回 message 严格区分，integration-smoke 断言 |
+| M2 | 中 | host 链路三 `patchedResolve` | 只看 `!info.reasoning` 无法区分「未配置」与「显式关闭」（`reasoningEfforts: false`）；对显式关闭的模型注入目录档位 → UI 显示档位但 dispatch 报 UNSUPPORTED_REASONING_EFFORT | 显式 `saved.reasoningEfforts === false` 跳过注入（integration-smoke 断言） |
+| M3 | 中 | host `normalizeHeadersInput` / client 表单 | `__proto__` 等原型键名经 `JSON.parse` 成为自有键，对象展开静默吞键 → 「清空 headers」语义被伪造，且原型污染面 | host 400（「原型键名」）；客户端就地报错；security-smoke 用 JSON.parse 向量断言 |
+| M4 | 中 | 目录匹配 | 带 `:tag`/`@tag` 的模型 id 先剥 tag 再匹配，`name@v1` 与 `name@v2` 会撞进同一桶 → 不同代际模型拿到错误参数 | 新增 `byRaw` 精确索引（level 1 先按完整 id 命中），security-smoke 断言变体互不串桶 |
+| M5 | 中 | client `loadDetail` 编辑器 | 整表替换丢掉其它模型行未保存的草稿（保存模型 B 丢模型 A 的输入） | dirty 标记 + 合并：有本地修改的行保留；`forceFresh` 供批量服务端刷新；保存/预设成功后单条清 dirty |
+| M6 | 中 | host `saveSources` / client 三源卡 | 清空地址 + `enabled:true` 会被后续 enabled 写回反杀成「启用 + 沿用旧地址」 | host `urlEmpty` 标志使空地址强制 disabled；客户端三源统一「地址为空 ⇒ 未启用」 |
+| M7 | 中 | client 测试链 | 单模型/全量测试最长 11 分钟且不占 busy，在途结果写进新渠道界面（跨渠道同 id 误归因）；全量批量切渠道后继续跑 | 纪元守卫：结果按纪元丢弃；全量检测到切换即中止并提示 |
+| M8 | 中 | package.json | peer 区间 `^0.1.0-rc.6` 低于实际依赖面（0.1.5-rc.2 的 slots/settings 形状） | 对齐 `^0.1.5-rc.2`；`dsh-llm-pi-ai` 声明为 optional peer（纯增强层） |
+| M9 | 中 | integration-smoke | 真 schema 路径硬编码 `C:/Users/yooy/...` 且失败即 FAIL —— verify 只能在原作者机器布局跑 | 动态解析（env `DSH_PI_AI_PATH` → createRequire 候选 → 兜底路径）；取不到降级 WARN，断言按无 schema 折叠 |
+| M10 | 中 | host `calibrateCatalogRoutes` | 校准源 `getBuiltinProviders()` 是静态名单，与 `builtinProviders()` 实测存在漂移风险 | 优先 `mod.builtinProviders().map(p=>p.id)`，取不到才回落静态名单 |
+| M11 | 中 | client About 页 | 目录源 URL 直接进 `<a href>`（草稿未保存值也渲染）→ `javascript:` 伪协议注入 | 非 `http(s)` 一律降级为纯文本 span |
+| F4 | 低 | ui-smoke | `\|\| true` 恒真断言（compat 卡断言形同虚设） | 真断言：枚举选项文本（`max_completion_tokens`）渲染 |
+| F5 | 低 | ui-smoke / preview.mjs 桩 | 桩形状漂移：枚举键 `values`（真契约 `options`）、幽灵字段 `visionCount`/`compatCount`、仓库链接指向 kingsunb | 全部对齐真实契约与 pyooyq 仓库；preview 输出 `.preview.html`（包内，已 gitignore） |
+| F6 | 低 | host `add-models` | 非法 `reasoningEfforts`（仅 off / 非对象）静默丢键落盘 | 显式 400（integration-smoke 断言） |
+| F7 | 低 | host 快照失效 | 源配置保存后未清目录失败退避 → 「保存了新地址仍按旧退避跳过」 | 快照失效同时清 `catalogFailureAt/catalogFailureSlow` |
+| L-安全 | 低 | host SSRF 面 | `0x7f.1`/`2130706173` 等数值编码 IPv4、尾点 FQDN 绕过 loopback/元数据判定 | `expandCompactIpv4`（inet_aton 语义）+ 尾点剥离，security-smoke 断言 |
+| L-SVG | 低 | host/client SVG 提取 | `<script` 无后随字符、实体解码后的 `on…`/`javascript:`/非位图 `data:`、SMIL `attributeName` 事件、超大载荷 | 两端同口径加固：实体解码后扫描、200KB 上限、白名单 data: |
+| L-键 | 低 | host `sanitizeDiagnosticText` / provider 打分 | `api-key` 连写、全角冒号、`sk-` 等厂商前缀泄漏；子串 `indexOf` 匹配渠道名（`hub` 命中 `hub-gm` 也命中 `not-hub-2`） | 补正则集；`hostnameHasProviderLabel` 边界匹配 |
+| L-键2 | 低 | client 词典 | `t('关闭')` 复用思考档位词条（EN 显示 "off"）；僵尸词条；10 处裸 `）` 未走词典 | 新增 `关闭面板` 词条；清理僵尸；全部包 `t()` |
+| L-注册 | 低 | client `settings.section` | 分区名在注册时定死，语言切换不刷新（平台契约要求注册方重注册） | 语言变化时重注册（跳过首挂载） |
+| L-快照 | 低 | client `applyProviderSnapshot` | 保存在途切渠道后回填覆盖新渠道卡片的未保存输入 | 传入 `savedProvider`，不一致不回填 |
+| L-思考 | 低 | host `testModel` | thinking wire 表只特判两种格式；off-with-wire 不发值；effortApplied 误报 | 按 pi-ai `thinkingLevelMap` 全格式编码；off-with-wire 发值；effortApplied 如实 |
+| L-中止 | 低 | host `testModel` | 客户端中止（关闭面板）后请求继续跑满超时 | `res.on('close')` → `clientAbort`，与 deadline signal 汇流 |
+| L-proxy | 低 | host 测试代理 | https 代理误用 http 模块建隧道 | 按协议选模块 |
+| L-纯度 | 低 | 纯函数区段 | 副作用（定时器等）混入纯区段的护栏缺失 | security-smoke 静态断言：无 setTimeout/process./fetch |
+
+优化（择要）：`checkUpdate` 10 分钟结果缓存（失败不缓存）；`describe()` 150ms 微缓存 + 写路径精准失效；三源目录 litellm/openrouter 并行拉取；`metadataFingerprint` 备忘录属性；`looseId` 派生消除双重归一；`saveModel/removeModel/submitAddModels/enrich` 的 listModels+bootstrap 并行（省一半往返）；`build.mjs` inject 对象形态防 TypeError；ui-smoke 未知端点 500 收紧（客户端新增未契约端点立即暴露）；catalog 校准直接用 builtinProviders 实测。
+
+显式豁免（评估后不改，避免回归风险大于收益）：
+- `listProviders()` 随每个写响应全量返回：响应体契约，改动波及客户端多处消费，收益仅省一次 GET；保留现状。
+- React 行级 memo / `parseAddModels` useMemo：仅在 100+ 模型规模有可测收益，与现有无头渲染桩的耦合改动风险高；本轮以纪元守卫与并行化为主。
+- `uiLang` 模块变量在渲染期赋值：单实例设置页下无实际并发面；重注册机制已覆盖标签刷新。
 
 ---
 

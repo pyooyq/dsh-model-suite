@@ -36,6 +36,10 @@ assert(end > start, 'helper region end marker not found in lib/index.js')
 const region = src.slice(start, end)
 assert(!/\bexport\b/.test(region), 'helper region must not contain export statements')
 assert(!/^\s*import\b/m.test(region), 'helper region must not contain import statements')
+// ★ R-低：区段纯度护栏——定时器/进程/fetch 这类副作用全局不允许混进纯函数区段
+assert(!/\bsetTimeout\s*\(/.test(region), 'helper region must not schedule timers (pure section)')
+assert(!/\bprocess\.\w/.test(region), 'helper region must not touch process.*')
+assert(!/\bfetch\s*\(/.test(region), 'helper region must not call fetch')
 
 const routesMod = await import(pathToFileURL(join(root, 'lib/catalog-routes.js')).href + '?smoke=' + Date.now())
 const compatMod = await import(pathToFileURL(join(root, 'lib/compat-fields.js')).href + '?smoke=' + Date.now())
@@ -82,6 +86,45 @@ assert(H.isLoopbackHostname('::1'), '::1 is loopback')
 assert(!H.isLoopbackHostname('8.8.8.8'), 'public address is not loopback')
 assert(H.isLoopbackRemoteAddress('::ffff:127.0.0.1'), 'IPv4-mapped loopback detected')
 assert(!H.isLoopbackRemoteAddress('10.0.0.5'), 'private address is not loopback remote')
+
+// A1b. 数值编码 IPv4（R-低）：inet_aton 紧凑形态必须判为 loopback/元数据，否则 HTTPS 面被绕过
+assert(H.isLoopbackHostname('0x7f.0.0.1'), '0x7f.0.0.1 expands to loopback')
+assert(H.isLoopbackHostname('0x7f000001'), 'single-hex-number IPv4 (0x7f000001 = 127.0.0.1) expands to loopback')
+assert(H.isLoopbackHostname('127.1'), '127.1 expands to loopback')
+assert(H.isLoopbackHostname('localhost.'), 'trailing-dot FQDN localhost is loopback')
+assert(H.isBlockedOutboundHostname('0xa9.0xfe.0xa9.0xfe'), 'hex-encoded metadata address is blocked')
+assert(H.isBlockedOutboundHostname('0xa9fea9fe'), 'single-hex-number metadata address is blocked')
+assert(!H.isLoopbackHostname('0x7f.0.0.256'), 'invalid compact form is not loopback')
+
+// A1c. __proto__ 头名拒绝（R-M3）：被校验接受的输入不得静默吞键后误清空已存 headers。
+// 注意：对象字面量 { '__proto__': 'v' } 本身就会被原型 setter 吞掉（无自有键），
+// 真实向量是 JSON.parse 产生的**自有** __proto__ 键——HTTP body 正是这样进来的。
+{
+  const evilHeaders = JSON.parse('{"__proto__":"v"}')
+  let protoThrew = false
+  try { H.normalizeHeadersInput(evilHeaders) } catch { protoThrew = true }
+  assert(protoThrew, 'header name __proto__ (own key from JSON.parse) must be rejected')
+  protoThrew = false
+  try { H.normalizeHeadersInput({ ok: 'v', constructor: 'x' }) } catch { protoThrew = true }
+  assert(protoThrew, 'header name constructor must be rejected')
+}
+
+// A1d. byRaw 变体索引（R-M4）：带 :tag/@tag 的 id 先按完整键精确命中，不合桶
+{
+  const variantCatalog = H.buildCatalog({
+    modelsDev: [
+      H.makeSuiteMeta('claude-sonnet-4-5@20250929', 'anthropic', 'models.dev', { contextWindow: 100000 }),
+      H.makeSuiteMeta('claude-sonnet-4-5@20251101', 'anthropic', 'models.dev', { contextWindow: 200000 }),
+      H.makeSuiteMeta('claude-sonnet-4-5', 'anthropic', 'models.dev', { contextWindow: 300000 }),
+    ],
+  })
+  const hitOld = H.matchModelCandidates('claude-sonnet-4-5@20250929', variantCatalog)
+  assert(hitOld.level === 1 && hitOld.candidates.length === 1 && hitOld.candidates[0].contextWindow === 100000,
+    'tag-variant id resolves to its own entry via byRaw (got ' + hitOld.candidates.length + ' candidates)')
+  const hitBase = H.matchModelCandidates('claude-sonnet-4-5', variantCatalog)
+  assert(hitBase.level === 1 && hitBase.candidates.length === 1 && hitBase.candidates[0].contextWindow === 300000,
+    'untagged id still resolves to the untagged entry')
+}
 
 // A2. 出站策略
 let threw = false

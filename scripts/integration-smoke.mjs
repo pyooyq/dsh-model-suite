@@ -15,9 +15,16 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import http from 'node:http'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+/**
+ * package.json 的版本号——**单一真源**。升版本只需改 package.json + lib/index.js
+ * 的 VERSION（build.mjs 交叉校验），本文件据 package.json 断言，不再写死字面量。
+ */
+const PKG_VERSION = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
 
 function assert(cond, msg) {
   if (!cond) throw new Error('[integration] ' + msg)
@@ -28,17 +35,34 @@ function check(cond, msg) {
   assert(cond, msg)
 }
 
-/* ─────────── 真 DSH 的 llm-pi-ai Config schema（可选） ─────────── */
+/* ─────────── 真 DSH 的 llm-pi-ai Config schema（尽力解析，可降级） ─────────── */
 
-const DSH_PI_AI = 'C:/Users/yooy/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js'
-let ConfigSchema = null
+// ★ R-M9：旧实现硬编码 C:/Users/yooy/... 绝对路径且失败即 FAIL——verify 套件只
+//   在原作者机器布局可跑。改为：环境变量 DSH_PI_AI_PATH → createRequire 逐候选
+//   解析；都取不到时降级为醒目 WARN（schema 校验相关断言按无 schema 折叠）。
+const SCHEMA_CANDIDATES = []
+if (process.env.DSH_PI_AI_PATH) SCHEMA_CANDIDATES.push(process.env.DSH_PI_AI_PATH)
 try {
-  const mod = await import(pathToFileURL(DSH_PI_AI).href)
-  ConfigSchema = mod.Config
-} catch (e) {
-  console.warn('[integration] WARN: dsh-llm-pi-ai Config schema unavailable — writes are not schema-validated:', e.message)
+  const require2 = createRequire(import.meta.url)
+  for (const spec of ['@deepseek-ai/dsh-llm-pi-ai/lib/index.js', '@deepseek-ai/dsh-llm-pi-ai', 'dsh/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js']) {
+    try { SCHEMA_CANDIDATES.push(require2.resolve(spec)) } catch (_) {}
+  }
+} catch (_) {}
+for (const globalRoot of [process.env.DSH_GLOBAL_NODE_MODULES, join(homedir(), '.dsh', 'node_modules')]) {
+  if (globalRoot) SCHEMA_CANDIDATES.push(join(globalRoot, '@deepseek-ai', 'dsh-llm-pi-ai', 'lib', 'index.js'))
 }
-check(!!ConfigSchema, 'real dsh-llm-pi-ai Config schema loaded (defence against writing invalid settings)')
+SCHEMA_CANDIDATES.push('C:/Users/yooy/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js')
+let ConfigSchema = null
+for (const candidate of SCHEMA_CANDIDATES) {
+  try {
+    const mod = await import(pathToFileURL(candidate).href)
+    if (mod && mod.Config) { ConfigSchema = mod.Config; break }
+  } catch (_) {}
+}
+if (!ConfigSchema) {
+  console.warn('[integration] WARN: dsh-llm-pi-ai Config schema not resolvable — writes are NOT schema-validated in this run.')
+  console.warn('[integration] WARN: set DSH_PI_AI_PATH=<path to dsh-llm-pi-ai/lib/index.js> to enable schema validation.')
+}
 
 /* ─────────── 三源目录：本地 HTTP 服务器 ─────────── */
 
@@ -404,7 +428,7 @@ check(!paths.some((p) => /save-provider$/.test(p)), 'no legacy save-provider rou
 let r = await h.get('/api/suite/bootstrap')
 check(r.status === 200 && r.json.ok !== false, 'bootstrap returns 200')
 check(r.json.writable === true, 'bootstrap.writable true')
-check(r.json.version === h.mod.VERSION && h.mod.VERSION === '0.1.1', 'bootstrap.version mirrors the lib VERSION export (0.1.1)')
+check(r.json.version === h.mod.VERSION && h.mod.VERSION === PKG_VERSION, 'bootstrap.version mirrors package.json + lib VERSION (' + PKG_VERSION + ')')
 check(JSON.stringify(r.json.levels) === '["off","minimal","low","medium","high","xhigh","max"]', 'bootstrap.levels = 7 thinking levels')
 check(r.json.protocols.length === 3 && r.json.listableProtocols.length === 2, 'bootstrap protocols')
 check(Array.isArray(r.json.compatFields['openai-completions']) && r.json.compatFields['openai-completions'].length === 19, 'bootstrap.compatFields[openai-completions] = 19')
@@ -646,7 +670,13 @@ check(JSON.stringify(c2private) === JSON.stringify({ id: 'private-unknown-model'
 const c2keep = afterChain2.find((m) => m.id === 'glm-4.6')
 check(c2keep.contextWindow === 256000 && c2keep.maxTokens === 32000, 'link 2 preserves hand-written 256000/32000 (#4 only-fill)')
 check(JSON.stringify(c2keep.input) === '["text"]', 'link 2 preserves hand-written text-only input')
-check(!!ConfigSchema, 'schema validated the enriched write')
+// ★ R-M9：schema 是纵深防御层，取不到时（外部环境）降级为 WARN 而非 FAIL——
+// verify 套件必须在任何机器布局上可跑。
+if (ConfigSchema) {
+  check(true, 'schema validated the enriched write')
+} else {
+  console.warn('[integration] WARN: skipping the schema-validation assertion (no Config schema resolved in this environment)')
+}
 
 // 命名空间闸门（修正 R1）：只有 llm-pi-ai 会被富化，其它 ns 原样透传。
 // 观察点是 fake settings 自身记录的写入（即补丁内部 bound(...) 真正收到的东西）。
@@ -757,6 +787,16 @@ check(infoAnnotated.context.contextWindow === 999, 'link 3 does not overwrite an
 check(infoAnnotated.defaultMaxTokens === 111, 'link 3 does not overwrite an existing defaultMaxTokens (no 32K/4096 sentinel)')
 check(infoAnnotated.reasoning.defaultEffort === 'low' && infoAnnotated.reasoning.efforts.length === 1, 'link 3 does not overwrite existing reasoning')
 
+// ★ R-M2：显式 reasoningEfforts:false（关闭推理）的模型，链路三**不得**注入目录档位
+// —— pi-ai 对 false 不产出 reasoning，注入后 UI 显示档位但 dispatch 会拒绝。
+// （用独立 harness，避免吃到主序列里其它测试的修订号/预设副作用。）
+const m2h = await makeHarness(INITIAL)
+r = await m2h.post('/api/suite/save-model', { provider: 'hub-gm', modelId: 'glm-4.6', editor: { disabled: true, levels: [], vision: false, name: 'My GLM', contextWindow: 256000, maxTokens: 32000 } })
+check(r.status === 200 && m2h.state.section.providers['hub-gm'].models.find((m) => m.id === 'glm-4.6').reasoningEfforts === false, 'R-M2 setup: glm-4.6 saved with reasoning off (' + JSON.stringify(r.json).slice(0, 120) + ')')
+const infoDisabled = await m2h.llm.resolveModelInfo('hub-gm', 'glm-4.6')
+check(infoDisabled.reasoning === undefined, 'R-M2: link 3 does NOT inject catalog levels into an explicitly reasoning-off model')
+m2h.runDispose()
+
 /* ═══════════════ 9. enrich-models（预览 + 写回） ═══════════════ */
 
 // 专用 harness：一个"未被链路二补过"的干净渠道，且 glm-4.6 已手填全部四类字段
@@ -792,12 +832,15 @@ check(r.json.unmatchedCount === 1, 'unmatchedCount matches')
 check(!r.json.changes.some((c) => c.id === 'glm-4.6'), 'overwrite=false leaves fully hand-filled values alone (no change entry)')
 check(r.json.sourcesUsed.indexOf('models.dev') >= 0 && r.json.sourcesUsed.indexOf('litellm') >= 0, 'sourcesUsed lists the sources actually queried')
 check(r.json.applied === false, 'preview does not apply')
+// ★ R-M1：预览模式的 message 必须说"可补全"而不是谎报"已写回"（旧实现 apply 恒真）
+check(!/已从目录写回/.test(r.json.message || '') && /可从目录补全/.test(r.json.message || ''), 'preview message says 可从目录补全, not 已从目录写回: ' + JSON.stringify(r.json.message))
 const preStateStr = JSON.stringify(en.state.section)
 r = await en.post('/api/suite/enrich-models', { provider: 'hub-gm', apply: false })
 check(JSON.stringify(en.state.section) === preStateStr, 'preview writes nothing (no settings write recorded)')
 
 r = await en.post('/api/suite/enrich-models', { provider: 'hub-gm', overwrite: true })
 check(r.status === 200 && r.json.applied === true, 'enrich-models apply ok: ' + JSON.stringify(r.json).slice(0, 200))
+check(/已从目录写回/.test(r.json.message || ''), 'apply message says 已从目录写回')
 const applied4 = en.state.section.providers['hub-gm'].models.find((m) => m.id === 'glm-4.6')
 check(applied4.contextWindow === 131072 && applied4.maxTokens === 16384, 'overwrite=true replaced the manual 256000/32000 with the catalog values')
 check(applied4.name === 'GLM 4.6', 'overwrite=true also replaces the display name with the catalog name (documented)')
@@ -989,6 +1032,17 @@ r = await h.post('/api/suite/add-models', { provider: 'hub-gm', models: [{ id: '
 check(r.status === 200 && r.json.skipped === true, 'add-models skips duplicates')
 bad = await h.post('/api/suite/add-models', { provider: 'hub-gm', models: [{ id: 'bad id!' }] })
 check(bad.status === 400 && /非法字符/.test(bad.json.error), 'B3: add-models rejects an illegal id charset (same whitelist as delete-model)')
+// ★ R-F6：add-models 对非法 reasoningEfforts 显式报错（此前 cloneModel 静默丢键）
+bad = await h.post('/api/suite/add-models', { provider: 'hub-gm', models: [{ id: 'efforts-only-off', reasoningEfforts: { off: null } }] })
+check(bad.status === 400 && /reasoningEfforts/.test(bad.json.error), 'R-F6: add-models rejects an off-only efforts map')
+bad = await h.post('/api/suite/add-models', { provider: 'hub-gm', models: [{ id: 'efforts-bad-type', reasoningEfforts: 'high' }] })
+check(bad.status === 400 && /reasoningEfforts/.test(bad.json.error), 'R-F6: add-models rejects a non-object efforts value')
+// ★ R-M6：清空地址 + enabled:true 不得被反杀回"启用 + 沿用旧地址"
+r = await h.post('/api/suite/save-sources', { sources: { litellm: { url: '', enabled: true } } })
+check(r.status === 200 && r.json.sources.litellm.enabled === false, 'R-M6: an empty URL forces the source off despite enabled:true')
+// ★ R-M3：__proto__ 头名（JSON.parse 自有键）必须 400，不得静默吞成"清空 headers"
+bad = await h.post('/api/suite/save-provider-advanced', JSON.parse('{"provider":"hub-gm","headers":{"__proto__":"v"}}'))
+check(bad.status === 400 && /原型键名/.test(bad.json.error), 'R-M3: __proto__ header name rejected with 400')
 
 bad = await h.post('/api/suite/save-sources', { sources: { litellm: { url: 'http://insecure.example.com/l.json' } } })
 check(bad.status === 400, 'save-sources rejects a non-HTTPS url: ' + JSON.stringify(bad.json))
@@ -1179,6 +1233,13 @@ check(r.status === 200 && JSON.stringify(th.state.section.providers['hub-gm'].mo
 // 目录补出来的 off 档（off: null = 支持关闭、关闭时不发参数）必须能原样写回
 r = await th.post('/api/suite/save-model', { provider: 'hub-gm', modelId: 'off-model', editor: { disabled: false, levels: [{ level: 'off', enabled: true, wire: '', wireNull: true }, { level: 'low', enabled: true, wire: 'low' }], vision: false } })
 check(r.status === 200 && JSON.stringify(th.state.section.providers['hub-gm'].models[1].reasoningEfforts) === '{"off":null,"low":"low"}', 'the off level round-trips as off:null (' + JSON.stringify(th.state.section.providers['hub-gm'].models[1].reasoningEfforts) + ')')
+// off 的 wire 值必须能落盘（pi-ai：off with a value sends that value）——
+// 此前 normalizeEditor 硬编码 efforts.off = null，把 UI 填的显式关闭值静默丢弃。
+r = await th.post('/api/suite/save-model', { provider: 'hub-gm', modelId: 'off-model', editor: { disabled: false, levels: [{ level: 'off', enabled: true, wire: 'none', wireNull: false }, { level: 'low', enabled: true, wire: 'low' }], vision: false } })
+check(r.status === 200 && JSON.stringify(th.state.section.providers['hub-gm'].models[1].reasoningEfforts) === '{"off":"none","low":"low"}', 'the off wire value round-trips (off:none is sent on the wire): ' + JSON.stringify(th.state.section.providers['hub-gm'].models[1].reasoningEfforts))
+check((() => { const row = (r.json.model.levels || []).find((l) => l.level === 'off'); return row && row.enabled === true && row.wireNull === false && row.wire === 'none' })(), 'modelView renders the off wire value (wireNull=false, wire=none)')
+r = await th.post('/api/suite/save-model', { provider: 'hub-gm', modelId: 'off-model', editor: { disabled: false, levels: [{ level: 'off', enabled: true, wire: 'x'.repeat(65) }, { level: 'low', enabled: true, wire: 'low' }], vision: false } })
+check(r.status === 400 && /off/.test(r.json.error), 'an over-long off wire value is rejected')
 r = await th.post('/api/suite/save-model', { provider: 'hub-gm', modelId: 'off-model', editor: { disabled: false, levels: [{ level: 'off', enabled: true, wire: '', wireNull: true }], vision: false } })
 check(r.status === 400, 'only-off levels are rejected (schema requires a non-off level)')
 th.runDispose()
